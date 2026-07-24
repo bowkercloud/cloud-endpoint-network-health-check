@@ -2,7 +2,7 @@
 
 A PowerShell script that tests connectivity to every endpoint required for Windows 365 and Azure Virtual Desktop - covering the Cloud PC host network, the end user client device, Intune, and Windows Autopilot.
 
-Built and maintained by [Dan Bowker](https://bowker.cloud) - Microsoft MVP for Windows 365.
+Built and maintained by [Daniel Bowker](https://bowker.cloud) - Microsoft MVP for Windows 365.
 
 ## Credit
 
