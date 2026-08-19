@@ -30,7 +30,7 @@
     .\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
 
 .NOTES
-    Version:    2.2
+    Version:    2.3
     Blog:       https://bowker.cloud
     References:
         https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
@@ -39,6 +39,12 @@
     Inspired by: https://gist.github.com/shannonfritz/4c9f1cf800f3406729a58417639736f3
 
     CHANGELOG:
+    v2.3 - Region picker rewritten with mandatory [region-picker] prefixed checkpoint
+           messages at every stage (page fetch, JSON download, parse, region count),
+           printed unconditionally in DarkGray so the exact failure point is always
+           visible, never silent. Simplified filename regex. Array-wrapped Where-Object
+           results to avoid PS5.1 single-item unwrapping issues seen elsewhere in this
+           script.
     v2.2 - FAILED endpoint output now shows the Notes field for context (e.g. regional
            WNS nodes). Region picker fetch failures now show explicit diagnostic
            messages instead of failing silently. More resilient regex-based parsing
@@ -69,7 +75,7 @@ param(
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
 $ScriptName     = 'Test-W365NetworkHealth'
-$ScriptVersion  = 'v2.2'
+$ScriptVersion  = 'v2.3'
 $CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/windows365/main/Endpoints.csv'
 $TimeoutSeconds = 5
 
@@ -659,77 +665,100 @@ $modeLabel = switch ($Mode) {
 $selectedRegion = $null
 
 if ($Mode -eq 1 -or $Mode -eq 3) {
+    Write-Host ""
+    Write-Host "  [region-picker] Starting Intune region lookup..." -ForegroundColor DarkGray
+
+    $downloadLink  = $null
+    $intuneRegions = $null
+    $pickerError   = $null
+
     try {
-        Write-Host ""
-        Write-Host "  Fetching Intune regional IP ranges from Microsoft..." -ForegroundColor DarkGray
+        Write-Host "  [region-picker] Requesting Microsoft download confirmation page..." -ForegroundColor DarkGray
+        $page = Invoke-WebRequest -Uri 'https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519' -UseBasicParsing -TimeoutSec 15
+        Write-Host "  [region-picker] Page request succeeded, response length: $($page.Content.Length) chars" -ForegroundColor DarkGray
 
-        $downloadLink = $null
+        $match = [regex]::Match($page.Content, 'ServiceTags_Public_[0-9]+')
+        if ($match.Success) {
+            $downloadLink = 'https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/' + $match.Value + '.json'
+            Write-Host "  [region-picker] Found filename: $($match.Value)" -ForegroundColor DarkGray
+        } else {
+            Write-Host "  [region-picker] Filename pattern not found in page content (page likely renders via JavaScript)." -ForegroundColor DarkYellow
+        }
+    } catch {
+        $pickerError = $_.Exception.Message
+        Write-Host "  [region-picker] Page request failed: $pickerError" -ForegroundColor DarkYellow
+    }
 
-        # Try 1: scrape the confirmation page for a direct .json link (works if server-rendered)
+    if ($downloadLink) {
         try {
-            $page = Invoke-WebRequest 'https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519' -UseBasicParsing -TimeoutSec 10
-            $match = [regex]::Match($page.Content, 'https://download\.microsoft\.com/download/[^"''\s]+ServiceTags_Public_\d+\.json')
-            if ($match.Success) {
-                $downloadLink = $match.Value
-            } else {
-                $nameMatch = [regex]::Match($page.Content, 'ServiceTags_Public_\d+')
-                if ($nameMatch.Success) {
-                    $downloadLink = "https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/$($nameMatch.Value).json"
-                }
-            }
-        } catch {
-            Write-Host "  Confirmation page fetch failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
-        }
-
-        # Try 2: fallback well-known static resolver some tooling uses for the current file
-        if (-not $downloadLink) {
-            Write-Host "  Direct scrape did not find a download link (page may be JS-rendered)." -ForegroundColor DarkYellow
-            Write-Host "  Skipping live region lookup - showing full static IP range list instead." -ForegroundColor DarkYellow
-            Write-Host "  Tip: you can select [G] equivalent manually by ignoring the region breakdown," -ForegroundColor DarkGray
-            Write-Host "       or allow the full list via the MicrosoftIntune service tag at your firewall." -ForegroundColor DarkGray
-        }
-
-        if ($downloadLink) {
-            $tagData = Invoke-RestMethod $downloadLink -TimeoutSec 30
+            Write-Host "  [region-picker] Downloading service tags JSON..." -ForegroundColor DarkGray
+            $tagData = Invoke-RestMethod -Uri $downloadLink -TimeoutSec 30
+            Write-Host "  [region-picker] JSON downloaded, $($tagData.values.Count) total service tag entries" -ForegroundColor DarkGray
 
             $intuneRegions = $tagData.values |
-                Where-Object { $_.name -match '^MicrosoftIntune\.' } |
+                Where-Object { $_.name -like 'MicrosoftIntune.*' } |
                 ForEach-Object {
                     [PSCustomObject]@{
                         Name     = $_.name
                         Region   = $_.properties.region
-                        Prefixes = $_.properties.addressPrefixes | Where-Object { $_ -notmatch ':' }
+                        Prefixes = @($_.properties.addressPrefixes | Where-Object { $_ -notmatch ':' })
                     }
                 } |
                 Where-Object { $_.Prefixes.Count -gt 0 } |
                 Sort-Object Region
-        } else {
+
+            Write-Host "  [region-picker] Found $(@($intuneRegions).Count) MicrosoftIntune regional entries" -ForegroundColor DarkGray
+        } catch {
+            $pickerError = $_.Exception.Message
+            Write-Host "  [region-picker] JSON download/parse failed: $pickerError" -ForegroundColor DarkYellow
             $intuneRegions = $null
         }
+    }
 
-        if ($intuneRegions) {
-            Write-Host ""
-            Write-Host "  Select your Azure region for Intune IP range guidance:" -ForegroundColor Yellow
-            Write-Host "    [0]  Skip IP range checks" -ForegroundColor White
-            Write-Host "    [G]  Show global list (all regions)" -ForegroundColor White
-            $i = 1
-            foreach ($r in $intuneRegions) {
-                Write-Host ("    [{0}]  {1}  ({2} ranges)" -f $i, $r.Region, $r.Prefixes.Count) -ForegroundColor White
-                $i++
+    if ($intuneRegions -and @($intuneRegions).Count -gt 0) {
+        Write-Host ""
+        Write-Host "  Select your Azure region for Intune IP range guidance:" -ForegroundColor Yellow
+        Write-Host "    [0]  Skip IP range checks" -ForegroundColor White
+        Write-Host "    [G]  Show global list (all regions)" -ForegroundColor White
+        $i = 1
+        foreach ($r in $intuneRegions) {
+            Write-Host ("    [{0}]  {1}  ({2} ranges)" -f $i, $r.Region, $r.Prefixes.Count) -ForegroundColor White
+            $i++
+        }
+        Write-Host ""
+        Write-Host "  Note: these are shown as informational entries only, not TCP tested." -ForegroundColor DarkGray
+        Write-Host "        If your region isn't listed, select [G] for the full global list." -ForegroundColor DarkGray
+        Write-Host ""
+        $inputRegion = Read-Host "  Enter choice [0]"
+        if ([string]::IsNullOrWhiteSpace($inputRegion)) { $inputRegion = '0' }
+
+        $endpointData = $endpointData | Where-Object { $_.Subcategory -notmatch 'IP Ranges' }
+
+        if ($inputRegion -eq 'G' -or $inputRegion -eq 'g') {
+            $allPrefixes = $intuneRegions | ForEach-Object { $_.Prefixes } | Sort-Object -Unique
+            Write-Host "  Using global list ($($allPrefixes.Count) unique IP ranges)" -ForegroundColor Blue
+            foreach ($prefix in $allPrefixes) {
+                $endpointData += [PSCustomObject]@{
+                    Category     = 'Intune'
+                    Subcategory  = 'IP Ranges'
+                    Endpoint     = $prefix
+                    Port         = '443'
+                    Protocol     = 'TCP'
+                    TestMode     = 'CloudPC'
+                    WildcardNote = 'IP range - allow via MicrosoftIntune service tag at firewall'
+                    Notes        = 'Intune global - live from Microsoft service tags'
+                    Reference    = 'https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints'
+                }
             }
-            Write-Host ""
-            Write-Host "  Note: these are shown as informational entries only, not TCP tested." -ForegroundColor DarkGray
-            Write-Host "        If your region isn't listed, select [G] for the full global list." -ForegroundColor DarkGray
-            Write-Host ""
-            $inputRegion = Read-Host "  Enter choice [0]"
-            if ([string]::IsNullOrWhiteSpace($inputRegion)) { $inputRegion = '0' }
+            $selectedRegion = [PSCustomObject]@{ Region = 'Global (all regions)'; Prefixes = $allPrefixes }
+        } else {
+            $regionIndex = 0
+            [void][int]::TryParse($inputRegion, [ref]$regionIndex)
 
-            $endpointData = $endpointData | Where-Object { $_.Subcategory -notmatch 'IP Ranges' }
-
-            if ($inputRegion -eq 'G' -or $inputRegion -eq 'g') {
-                $allPrefixes = $intuneRegions | ForEach-Object { $_.Prefixes } | Sort-Object -Unique
-                Write-Host "  Using global list ($($allPrefixes.Count) unique IP ranges)" -ForegroundColor Blue
-                foreach ($prefix in $allPrefixes) {
+            if ($regionIndex -gt 0 -and $regionIndex -le @($intuneRegions).Count) {
+                $selectedRegion = $intuneRegions[$regionIndex - 1]
+                Write-Host "  Region: $($selectedRegion.Region)  ($($selectedRegion.Prefixes.Count) IP ranges)" -ForegroundColor Blue
+                foreach ($prefix in $selectedRegion.Prefixes) {
                     $endpointData += [PSCustomObject]@{
                         Category     = 'Intune'
                         Subcategory  = 'IP Ranges'
@@ -737,40 +766,23 @@ if ($Mode -eq 1 -or $Mode -eq 3) {
                         Port         = '443'
                         Protocol     = 'TCP'
                         TestMode     = 'CloudPC'
-                        WildcardNote = 'IP range - allow via MicrosoftIntune service tag at firewall'
-                        Notes        = 'Intune global - live from Microsoft service tags'
+                        WildcardNote = "IP range - allow via MicrosoftIntune.$($selectedRegion.Region) service tag"
+                        Notes        = "Intune $($selectedRegion.Region) - live from Microsoft service tags"
                         Reference    = 'https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints'
                     }
                 }
-                $selectedRegion = [PSCustomObject]@{ Region = 'Global (all regions)'; Prefixes = $allPrefixes }
             } else {
-                $regionIndex = 0
-                [void][int]::TryParse($inputRegion, [ref]$regionIndex)
-
-                if ($regionIndex -gt 0 -and $regionIndex -le $intuneRegions.Count) {
-                    $selectedRegion = $intuneRegions[$regionIndex - 1]
-                    Write-Host "  Region: $($selectedRegion.Region)  ($($selectedRegion.Prefixes.Count) IP ranges)" -ForegroundColor Blue
-                    foreach ($prefix in $selectedRegion.Prefixes) {
-                        $endpointData += [PSCustomObject]@{
-                            Category     = 'Intune'
-                            Subcategory  = 'IP Ranges'
-                            Endpoint     = $prefix
-                            Port         = '443'
-                            Protocol     = 'TCP'
-                            TestMode     = 'CloudPC'
-                            WildcardNote = "IP range - allow via MicrosoftIntune.$($selectedRegion.Region) service tag"
-                            Notes        = "Intune $($selectedRegion.Region) - live from Microsoft service tags"
-                            Reference    = 'https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints'
-                        }
-                    }
-                } else {
-                    Write-Host "  Skipping IP range checks." -ForegroundColor DarkGray
-                }
+                Write-Host "  Skipping IP range checks." -ForegroundColor DarkGray
             }
         }
-    } catch {
-        Write-Host "  Could not fetch live IP ranges - falling back to static CSV list." -ForegroundColor DarkYellow
+    } else {
+        Write-Host "  [region-picker] No live region data available - full static IP range list from the CSV will be used." -ForegroundColor DarkYellow
+        if ($pickerError) {
+            Write-Host "  [region-picker] Last error: $pickerError" -ForegroundColor DarkYellow
+        }
     }
+
+    Write-Host "  [region-picker] Done." -ForegroundColor DarkGray
 }
 
 Write-Host ""
