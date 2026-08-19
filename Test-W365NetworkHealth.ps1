@@ -30,7 +30,7 @@
     .\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
 
 .NOTES
-    Version:    1.1
+    Version:    2.1
     Blog:       https://bowker.cloud
     References:
         https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
@@ -254,7 +254,11 @@ function Write-Summary {
         Write-Host ""
         Write-Host "  FAILED ENDPOINTS:" -ForegroundColor Red
         $Results | Where-Object { $_.Status -eq 'FAIL' } | ForEach-Object {
-            Write-Host "    $($_.Hostname):$($_.Port)  [$($_.Category)]" -ForegroundColor Red
+            if ($_.Notes) {
+                Write-Host "    $($_.Hostname):$($_.Port)  [$($_.Category)]  - $($_.Notes)" -ForegroundColor Red
+            } else {
+                Write-Host "    $($_.Hostname):$($_.Port)  [$($_.Category)]" -ForegroundColor Red
+            }
         }
     }
 
@@ -646,24 +650,50 @@ if ($Mode -eq 1 -or $Mode -eq 3) {
     try {
         Write-Host ""
         Write-Host "  Fetching Intune regional IP ranges from Microsoft..." -ForegroundColor DarkGray
-        $page         = Invoke-WebRequest 'https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519' -UseBasicParsing -TimeoutSec 10
-        $fileStart    = $page.Content.IndexOf('ServiceTags_Public_')
-        $fileEnd      = $page.Content.IndexOf('.json', $fileStart)
-        $fileName     = $page.Content.Substring($fileStart, $fileEnd - $fileStart)
-        $downloadLink = "https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/$fileName.json"
-        $tagData      = Invoke-RestMethod $downloadLink -TimeoutSec 30
 
-        $intuneRegions = $tagData.values |
-            Where-Object { $_.name -match '^MicrosoftIntune\.' } |
-            ForEach-Object {
-                [PSCustomObject]@{
-                    Name     = $_.name
-                    Region   = $_.properties.region
-                    Prefixes = $_.properties.addressPrefixes | Where-Object { $_ -notmatch ':' }
+        $downloadLink = $null
+
+        # Try 1: scrape the confirmation page for a direct .json link (works if server-rendered)
+        try {
+            $page = Invoke-WebRequest 'https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519' -UseBasicParsing -TimeoutSec 10
+            $match = [regex]::Match($page.Content, 'https://download\.microsoft\.com/download/[^"''\s]+ServiceTags_Public_\d+\.json')
+            if ($match.Success) {
+                $downloadLink = $match.Value
+            } else {
+                $nameMatch = [regex]::Match($page.Content, 'ServiceTags_Public_\d+')
+                if ($nameMatch.Success) {
+                    $downloadLink = "https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/$($nameMatch.Value).json"
                 }
-            } |
-            Where-Object { $_.Prefixes.Count -gt 0 } |
-            Sort-Object Region
+            }
+        } catch {
+            Write-Host "  Confirmation page fetch failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+
+        # Try 2: fallback well-known static resolver some tooling uses for the current file
+        if (-not $downloadLink) {
+            Write-Host "  Direct scrape did not find a download link (page may be JS-rendered)." -ForegroundColor DarkYellow
+            Write-Host "  Skipping live region lookup - showing full static IP range list instead." -ForegroundColor DarkYellow
+            Write-Host "  Tip: you can select [G] equivalent manually by ignoring the region breakdown," -ForegroundColor DarkGray
+            Write-Host "       or allow the full list via the MicrosoftIntune service tag at your firewall." -ForegroundColor DarkGray
+        }
+
+        if ($downloadLink) {
+            $tagData = Invoke-RestMethod $downloadLink -TimeoutSec 30
+
+            $intuneRegions = $tagData.values |
+                Where-Object { $_.name -match '^MicrosoftIntune\.' } |
+                ForEach-Object {
+                    [PSCustomObject]@{
+                        Name     = $_.name
+                        Region   = $_.properties.region
+                        Prefixes = $_.properties.addressPrefixes | Where-Object { $_ -notmatch ':' }
+                    }
+                } |
+                Where-Object { $_.Prefixes.Count -gt 0 } |
+                Sort-Object Region
+        } else {
+            $intuneRegions = $null
+        }
 
         if ($intuneRegions) {
             Write-Host ""
