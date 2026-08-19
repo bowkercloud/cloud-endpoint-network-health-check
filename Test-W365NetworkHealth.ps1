@@ -30,53 +30,13 @@
     .\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
 
 .NOTES
-    Version:    2.6
+    Version:    1.1
     Blog:       https://bowker.cloud
     References:
         https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
         https://learn.microsoft.com/en-us/azure/virtual-desktop/required-fqdn-endpoint
         https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
     Inspired by: https://gist.github.com/shannonfritz/4c9f1cf800f3406729a58417639736f3
-
-    CHANGELOG:
-    v2.6 - Restored the 15 MAA attestation endpoints (intunemaape1-19) which had been
-           dropped from Endpoints.csv during an earlier IP range cleanup pass, and
-           added the previously-missing intunemaape6.ncus.attest.azure.net (North
-           Central US). Cross-checked the full 81-entry Intune IP range list against
-           Microsoft's live "Consolidated Endpoint List" (authoritative source,
-           updated 2026-08-05) - confirmed an exact match, zero missing, zero extra.
-    v2.5 - Region picker rebuilt using a working approach: since no dedicated
-           MicrosoftIntune service tag exists, each published Intune IP range (ID
-           163) is cross-referenced against the AzureCloud.<Region> tags (which do
-           have full regional breakdown covering the entire Azure public IP space)
-           using CIDR containment logic, to determine which region it physically
-           belongs to. Verified against the real Azure IP Ranges JSON: all 81
-           published ranges resolve cleanly to one of 21 regions. Front Door and
-           IPv6 ranges are always shown regardless of region selection.
-    v2.4 - Removed the Azure region picker for Intune IP ranges entirely. Diagnostic
-           output in v2.3 confirmed there is no "MicrosoftIntune.<Region>" Azure
-           service tag - Microsoft's own docs state Intune-related entries in the
-           service tags JSON are filed under AzureFrontDoor.MicrosoftSecurity, not
-           a dedicated per-region Intune tag. The ID 163 Intune client/host service
-           IP list is a flat published list, not a formal regionally-broken-out
-           service tag, so no live region filtering is possible. All IP ranges
-           remain [INFO] entries with corrected guidance reflecting this.
-    v2.3 - Region picker rewritten with mandatory [region-picker] prefixed checkpoint
-           messages at every stage (page fetch, JSON download, parse, region count),
-           printed unconditionally in DarkGray so the exact failure point is always
-           visible, never silent. Simplified filename regex. Array-wrapped Where-Object
-           results to avoid PS5.1 single-item unwrapping issues seen elsewhere in this
-           script.
-    v2.2 - FAILED endpoint output now shows the Notes field for context (e.g. regional
-           WNS nodes). Region picker fetch failures now show explicit diagnostic
-           messages instead of failing silently. More resilient regex-based parsing
-           of the Microsoft service tags download link.
-    v2.1 - Added Azure region picker for Intune IP range guidance (fetches live from
-           Microsoft service tags JSON). IP ranges always shown as [INFO], never TCP
-           tested. Added FABRIC status for 168.63.129.16 and 169.254.169.254 (Azure
-           WireServer/IMDS) per https://learn.microsoft.com/en-us/azure/virtual-desktop/azurecommunicationips.
-           Removed deprecated *.cmdagent.trafficmanager.net (consolidated into
-           *.infra.windows365.microsoft.com per Microsoft).
 
     NOTE on Intune endpoints:
     Microsoft have deprecated the Office 365 Endpoint API (endpoints.office.com) for retrieving
@@ -97,7 +57,7 @@ param(
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
 $ScriptName     = 'Test-W365NetworkHealth'
-$ScriptVersion  = 'v2.6'
+$ScriptVersion  = 'v1.1'
 $CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/windows365/main/Endpoints.csv'
 $TimeoutSeconds = 5
 
@@ -152,36 +112,27 @@ function Test-Endpoint {
         return $result
     }
 
-    # Azure platform fabric IPs (WireServer / IMDS) - cannot be reliably TCP tested
-    # Per https://learn.microsoft.com/en-us/azure/virtual-desktop/azurecommunicationips
-    # these addresses operate at the Azure fabric level, must not be intercepted,
-    # proxied, or redirected, and can behave differently to normal endpoints.
-    if ($Hostname -eq '168.63.129.16' -or $Hostname -eq '169.254.169.254') {
-        $result.Status = 'FABRIC'
-        $pad = [string]::new(' ', [Math]::Max(0, 55 - ($Hostname.Length + $Port.ToString().Length)))
-        Write-Host "  [" -NoNewline
-        Write-Host "INFO" -ForegroundColor DarkCyan -NoNewline
-        Write-Host "] $Hostname`:$Port$pad (Azure fabric IP - not reliably TCP testable, must not be proxied/intercepted)" -ForegroundColor DarkCyan
-        return $result
-    }
-
-    # IP ranges (CIDR) - always flag as INFO, recommend service tag at firewall.
-    # Raw TCP tests against individual IPs in a global range produce misleading
-    # results, since not every published IP is actively serving traffic from
-    # every Azure region at any given time.
+    # IP ranges (CIDR) - UDP ranges flag as INFO, TCP ranges extract base IP and test
     if ($Hostname -match '/\d+$') {
-        $result.Status = 'IPRANGE'
-        $pad = [string]::new(' ', [Math]::Max(0, 55 - ($Hostname.Length + $Port.ToString().Length)))
-        Write-Host "  [" -NoNewline
-        Write-Host "INFO" -ForegroundColor DarkCyan -NoNewline
-        if ($Hostname -match ':') {
-            Write-Host "] $Hostname  TCP:$Port$pad (IPv6 range - verify firewall allows IPv6 outbound)" -ForegroundColor DarkCyan
-        } elseif ($Protocol -eq 'UDP' -or $Port -eq 3478) {
+        if ($Protocol -eq 'UDP' -or $Port -eq 3478) {
+            $result.Status = 'IPRANGE'
+            $pad = [string]::new(' ', [Math]::Max(0, 55 - ($Hostname.Length + $Port.ToString().Length)))
+            Write-Host "  [" -NoNewline
+            Write-Host "INFO" -ForegroundColor DarkCyan -NoNewline
             Write-Host "] $Hostname  UDP:$Port$pad (IP range - verify firewall/NSG allows UDP $Port outbound)" -ForegroundColor DarkCyan
-        } else {
-            Write-Host "] $Hostname  TCP:$Port$pad (IP range - published Intune range, allow at firewall)" -ForegroundColor DarkCyan
+            return $result
         }
-        return $result
+        # IPv6 ranges cannot be easily tested - flag as INFO
+        if ($Hostname -match ':') {
+            $result.Status = 'IPRANGE'
+            $pad = [string]::new(' ', [Math]::Max(0, 55 - ($Hostname.Length + $Port.ToString().Length)))
+            Write-Host "  [" -NoNewline
+            Write-Host "INFO" -ForegroundColor DarkCyan -NoNewline
+            Write-Host "] $Hostname  TCP:$Port$pad (IPv6 range - verify firewall allows IPv6 outbound)" -ForegroundColor DarkCyan
+            return $result
+        }
+        # TCP IP ranges - extract base IP and test connectivity
+        $Hostname = $Hostname -replace '/\d+$', ''
     }
 
     # time.windows.com is UDP/123 - flag rather than TCP test
@@ -269,7 +220,6 @@ function Write-Summary {
     $fail     = [int]($Results | Where-Object { $_.Status -eq 'FAIL'     } | Measure-Object).Count
     $wildcard = [int]($Results | Where-Object { $_.Status -eq 'WILDCARD' } | Measure-Object).Count
     $udponly  = [int]($Results | Where-Object { $_.Status -in 'IPRANGE','UDPONLY' } | Measure-Object).Count
-    $fabric   = [int]($Results | Where-Object { $_.Status -eq 'FABRIC'   } | Measure-Object).Count
     $total    = [int]($Results | Measure-Object).Count
 
     Write-Host ""
@@ -285,20 +235,13 @@ function Write-Summary {
     }
     Write-Host "  Wildcards      : $wildcard  (verify DNS resolution manually)"         -ForegroundColor DarkYellow
     Write-Host "  UDP/IP Ranges  : $udponly   (verify firewall/NSG allows UDP outbound)" -ForegroundColor DarkCyan
-    if ($fabric -gt 0) {
-        Write-Host "  Azure Fabric   : $fabric   (see notes - cannot be reliably TCP tested)" -ForegroundColor DarkCyan
-    }
     Write-Host "─────────────────────────────────────────────────────" -ForegroundColor DarkGray
 
     if ($fail -gt 0) {
         Write-Host ""
         Write-Host "  FAILED ENDPOINTS:" -ForegroundColor Red
         $Results | Where-Object { $_.Status -eq 'FAIL' } | ForEach-Object {
-            if ($_.Notes) {
-                Write-Host "    $($_.Hostname):$($_.Port)  [$($_.Category)]  - $($_.Notes)" -ForegroundColor Red
-            } else {
-                Write-Host "    $($_.Hostname):$($_.Port)  [$($_.Category)]" -ForegroundColor Red
-            }
+            Write-Host "    $($_.Hostname):$($_.Port)  [$($_.Category)]" -ForegroundColor Red
         }
     }
 
@@ -318,23 +261,6 @@ function Write-Summary {
         $udpItems | ForEach-Object {
             Write-Host "    $($_.Hostname)  UDP:$($_.Port)  [$($_.Category)]  - $($_.Notes)" -ForegroundColor DarkCyan
         }
-        Write-Host ""
-        Write-Host "  Note: the Intune client/host service IP ranges (ID 163) are a published list," -ForegroundColor DarkGray
-        Write-Host "        not a dedicated Azure service tag, so they can't be filtered directly by" -ForegroundColor DarkGray
-        Write-Host "        region. If you selected a region above, this list has already been" -ForegroundColor DarkGray
-        Write-Host "        narrowed by cross-referencing each range against AzureCloud regional tags." -ForegroundColor DarkGray
-        Write-Host "        The separate Azure Front Door ranges are covered by the" -ForegroundColor DarkGray
-        Write-Host "        AzureFrontDoor.MicrosoftSecurity service tag if you prefer to use one." -ForegroundColor DarkGray
-    }
-
-    $fabricItems = $Results | Where-Object { $_.Status -eq 'FABRIC' }
-    if ($fabricItems) {
-        Write-Host ""
-        Write-Host "  AZURE FABRIC IPs (WireServer / IMDS - do not proxy or intercept):" -ForegroundColor DarkCyan
-        $fabricItems | ForEach-Object {
-            Write-Host "    $($_.Hostname):$($_.Port)  [$($_.Category)]  - $($_.Notes)" -ForegroundColor DarkCyan
-        }
-        Write-Host "    See: https://learn.microsoft.com/en-us/azure/virtual-desktop/azurecommunicationips" -ForegroundColor DarkGray
     }
 }
 
@@ -370,8 +296,8 @@ function Get-BuiltInEndpoints {
         [PSCustomObject]@{ Category='AVD-SessionHost'; Subcategory='Activation';       Endpoint='azkms.core.windows.net';                  Port=1688; TestMode='CloudPC'; Notes='Windows KMS activation' }
         [PSCustomObject]@{ Category='AVD-SessionHost'; Subcategory='Updates';          Endpoint='mrsglobalsteus2prod.blob.core.windows.net'; Port=443; TestMode='CloudPC'; Notes='AVD agent and SXS stack updates' }
         [PSCustomObject]@{ Category='AVD-SessionHost'; Subcategory='Portal';           Endpoint='wvdportalstorageblob.blob.core.windows.net'; Port=443; TestMode='CloudPC'; Notes='Azure portal support' }
-        [PSCustomObject]@{ Category='AVD-SessionHost'; Subcategory='Azure';            Endpoint='169.254.169.254';                         Port=80;   TestMode='CloudPC'; Notes='Azure Instance Metadata Service (IMDS) - Azure fabric IP; must not be proxied or intercepted' }
-        [PSCustomObject]@{ Category='AVD-SessionHost'; Subcategory='Azure';            Endpoint='168.63.129.16';                           Port=80;   TestMode='CloudPC'; Notes='WireServer - session host health monitoring; Azure fabric IP; must not be proxied or intercepted' }
+        [PSCustomObject]@{ Category='AVD-SessionHost'; Subcategory='Azure';            Endpoint='169.254.169.254';                         Port=80;   TestMode='CloudPC'; Notes='Azure Instance Metadata Service (IMDS)' }
+        [PSCustomObject]@{ Category='AVD-SessionHost'; Subcategory='Azure';            Endpoint='168.63.129.16';                           Port=80;   TestMode='CloudPC'; Notes='Session host health monitoring' }
         [PSCustomObject]@{ Category='AVD-SessionHost'; Subcategory='Certificates';     Endpoint='oneocsp.microsoft.com';                   Port=80;   TestMode='CloudPC'; Notes='OCSP certificate validation' }
         [PSCustomObject]@{ Category='AVD-SessionHost'; Subcategory='Certificates';     Endpoint='www.microsoft.com';                       Port=80;   TestMode='CloudPC'; Notes='Certificate chain' }
         [PSCustomObject]@{ Category='AVD-SessionHost'; Subcategory='Certificates';     Endpoint='azcsprodeusaikpublish.blob.core.windows.net'; Port=80; TestMode='CloudPC'; Notes='AIK certificate publishing' }
@@ -437,26 +363,10 @@ function Get-BuiltInEndpoints {
         [PSCustomObject]@{ Category='Intune'; Subcategory='Config';                 Endpoint='fd.api.orgmsg.microsoft.com';             Port=443;  TestMode='CloudPC'; Notes='Organizational messages' }
         [PSCustomObject]@{ Category='Intune'; Subcategory='Config';                 Endpoint='config.office.com';                       Port=443;  TestMode='CloudPC'; Notes='Office Customization Service' }
         [PSCustomObject]@{ Category='Intune'; Subcategory='Org Messages';            Endpoint='ris.prod.api.personalization.ideas.microsoft.com'; Port=443; TestMode='CloudPC'; Notes='Organizational messages personalization service' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='WNS Push';               Endpoint='sinwns1011421.wns.windows.com';            Port=443;  TestMode='CloudPC'; Notes='Windows Push Notification - Singapore-specific node; may not resolve outside APAC tenants' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='WNS Push';               Endpoint='sinwns1011421.wns.windows.com';            Port=443;  TestMode='CloudPC'; Notes='Windows Push Notification - Singapore WNS node' }
         [PSCustomObject]@{ Category='Intune'; Subcategory='WNS Push';               Endpoint='sin.notify.windows.com';                  Port=443;  TestMode='CloudPC'; Notes='Windows Push Notification - Singapore notify node' }
         [PSCustomObject]@{ Category='Intune'; Subcategory='Android AOSP';           Endpoint='intunecdnpeasd.azureedge.net';             Port=443;  TestMode='CloudPC'; Notes='Android AOSP - legacy domain (migrating to manage.microsoft.com)' }
         [PSCustomObject]@{ Category='Intune'; Subcategory='Android AOSP';           Endpoint='intunecdnpeasd.manage.microsoft.com';     Port=443;  TestMode='CloudPC'; Notes='Android AOSP device management' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape1.eus.attest.azure.net';        Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - East US' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape2.eus2.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - East US 2' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape3.cus.attest.azure.net';        Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - Central US' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape4.wus.attest.azure.net';        Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - West US' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape5.scus.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - South Central US' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape6.ncus.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - North Central US' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape7.neu.attest.azure.net';        Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - North Europe' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape8.neu.attest.azure.net';        Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - North Europe 2' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape9.neu.attest.azure.net';        Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - North Europe 3' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape10.weu.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - West Europe' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape11.weu.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - West Europe 2' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape12.weu.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - West Europe 3' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape13.jpe.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - Japan East' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape17.jpe.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - Japan East 2' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape18.jpe.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - Japan East 3' }
-        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape19.jpe.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - Japan East 4' }
 
         # ── Intune IP Ranges (ID 163 - Allow Required) ───────────────────────
         [PSCustomObject]@{ Category='Intune'; Subcategory='IP Ranges'; Endpoint='4.145.74.224/27';    Port=443; TestMode='CloudPC'; Notes='Intune client and host service (ID 163)' }
@@ -706,140 +616,13 @@ $modeLabel = switch ($Mode) {
     3 { 'Both' }
 }
 
-# ── Step 2b: Region picker for Intune IP ranges ───────────────────────────────
-# There is no dedicated "MicrosoftIntune.<Region>" Azure service tag - confirmed
-# by direct inspection of the Azure IP Ranges JSON. Instead, we cross-reference
-# each published Intune IP range (ID 163) against the AzureCloud.<Region> tags,
-# which DO have full regional breakdown covering the entire Azure public IP
-# space, to work out which region each published range actually belongs to.
-$selectedRegion = $null
-
-function ConvertTo-UInt32IP {
-    param([string]$IP)
-    try {
-        $bytes = ([System.Net.IPAddress]$IP).GetAddressBytes()
-        if ($bytes.Length -ne 4) { return $null }
-        return ([uint32]$bytes[0] -shl 24) -bor ([uint32]$bytes[1] -shl 16) -bor ([uint32]$bytes[2] -shl 8) -bor [uint32]$bytes[3]
-    } catch { return $null }
-}
-
-function Get-CidrRange {
-    param([string]$Cidr)
-    $parts = $Cidr -split '/'
-    if ($parts.Count -ne 2) { return $null }
-    $base = ConvertTo-UInt32IP $parts[0]
-    if ($null -eq $base) { return $null }
-    $prefix   = [int]$parts[1]
-    $hostBits = 32 - $prefix
-    $mask     = if ($hostBits -ge 32) { [uint32]0 } elseif ($hostBits -eq 0) { [uint32]::MaxValue } else { [uint32]::MaxValue -shl $hostBits }
-    $hostMask = [uint32]::MaxValue - $mask
-    $netStart = $base -band $mask
-    $netEnd   = $netStart -bor $hostMask
-    return [PSCustomObject]@{ Start = $netStart; End = $netEnd }
-}
-
-function Test-CidrContains {
-    param([string]$OuterCidr, [string]$InnerCidr)
-    $outer = Get-CidrRange $OuterCidr
-    $inner = Get-CidrRange $InnerCidr
-    if (-not $outer -or -not $inner) { return $false }
-    return ($inner.Start -ge $outer.Start -and $inner.End -le $outer.End)
-}
-
-if ($Mode -eq 1 -or $Mode -eq 3) {
-    Write-Host ""
-    Write-Host "  [region-picker] Mapping published Intune IP ranges to Azure regions..." -ForegroundColor DarkGray
-
-    $ipRangeEndpoints = @($endpointData | Where-Object { $_.Subcategory -eq 'IP Ranges' } | Select-Object -ExpandProperty Endpoint -Unique)
-    Write-Host "  [region-picker] $($ipRangeEndpoints.Count) unique IPv4 ranges to map" -ForegroundColor DarkGray
-
-    $regionMap   = @{}
-    $downloadLink = $null
-
-    try {
-        $page  = Invoke-WebRequest -Uri 'https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519' -UseBasicParsing -TimeoutSec 15
-        $match = [regex]::Match($page.Content, 'ServiceTags_Public_[0-9]+')
-        if ($match.Success) {
-            $downloadLink = 'https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/' + $match.Value + '.json'
-        }
-    } catch {
-        Write-Host "  [region-picker] Could not reach Microsoft download page: $($_.Exception.Message)" -ForegroundColor DarkYellow
-    }
-
-    if ($downloadLink) {
-        try {
-            $tagData = Invoke-RestMethod -Uri $downloadLink -TimeoutSec 30
-            $azureCloudRegions = $tagData.values | Where-Object { $_.name -like 'AzureCloud.*' }
-            Write-Host "  [region-picker] Loaded $(@($azureCloudRegions).Count) AzureCloud regional tags" -ForegroundColor DarkGray
-
-            foreach ($ipRange in $ipRangeEndpoints) {
-                $foundRegion = $null
-                foreach ($tag in $azureCloudRegions) {
-                    foreach ($prefix in $tag.properties.addressPrefixes) {
-                        if ($prefix -notmatch ':' -and (Test-CidrContains -OuterCidr $prefix -InnerCidr $ipRange)) {
-                            $foundRegion = $tag.properties.region
-                            break
-                        }
-                    }
-                    if ($foundRegion) { break }
-                }
-                if ($foundRegion) {
-                    if (-not $regionMap.ContainsKey($foundRegion)) { $regionMap[$foundRegion] = @() }
-                    $regionMap[$foundRegion] += $ipRange
-                }
-            }
-            Write-Host "  [region-picker] Mapped $(($regionMap.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum) of $($ipRangeEndpoints.Count) ranges across $($regionMap.Keys.Count) regions" -ForegroundColor DarkGray
-        } catch {
-            Write-Host "  [region-picker] Failed to download or process service tags JSON: $($_.Exception.Message)" -ForegroundColor DarkYellow
-        }
-    }
-
-    if ($regionMap.Keys.Count -gt 0) {
-        Write-Host ""
-        Write-Host "  Select your Azure region to narrow the Intune IP range guidance:" -ForegroundColor Yellow
-        Write-Host "    [0]  Skip region filtering - show full list" -ForegroundColor White
-        $sortedRegions = $regionMap.Keys | Sort-Object
-        $i = 1
-        foreach ($region in $sortedRegions) {
-            Write-Host ("    [{0}]  {1}  ({2} ranges)" -f $i, $region, $regionMap[$region].Count) -ForegroundColor White
-            $i++
-        }
-        Write-Host ""
-        Write-Host "  Note: mapped by cross-referencing against AzureCloud regional tags," -ForegroundColor DarkGray
-        Write-Host "        since Intune itself has no dedicated regional service tag." -ForegroundColor DarkGray
-        Write-Host "        Front Door and IPv6 ranges are always shown regardless of choice." -ForegroundColor DarkGray
-        Write-Host ""
-        $inputRegion = Read-Host "  Enter choice [0]"
-        if ([string]::IsNullOrWhiteSpace($inputRegion)) { $inputRegion = '0' }
-
-        $regionIndex = 0
-        [void][int]::TryParse($inputRegion, [ref]$regionIndex)
-
-        if ($regionIndex -gt 0 -and $regionIndex -le $sortedRegions.Count) {
-            $selectedRegion = $sortedRegions[$regionIndex - 1]
-            $keepRanges = $regionMap[$selectedRegion]
-            Write-Host "  Region: $selectedRegion  ($($keepRanges.Count) ranges)" -ForegroundColor Blue
-            $endpointData = $endpointData | Where-Object {
-                $_.Subcategory -ne 'IP Ranges' -or $_.Endpoint -in $keepRanges
-            }
-        } else {
-            Write-Host "  Showing full list (no region filter applied)." -ForegroundColor DarkGray
-        }
-    } else {
-        Write-Host "  [region-picker] Could not map any ranges to regions - showing full static list." -ForegroundColor DarkYellow
-    }
-}
-
 Write-Host ""
 Write-Host "  Mode      : $modeLabel" -ForegroundColor Blue
-if ($selectedRegion) {
-    Write-Host "  Region    : $selectedRegion  (mapped via AzureCloud tags)" -ForegroundColor Blue
-}
 Write-Host "  Computer  : $env:COMPUTERNAME  |  User: $env:USERNAME" -ForegroundColor DarkGray
 Write-Host "  Date/Time : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "─────────────────────────────────────────────────────" -ForegroundColor DarkGray
-Write-Host "  Legend:  [ OK ] Connected   [FAIL] Blocked   [SKIP] Wildcard   [INFO] UDP/IP Range/Fabric" -ForegroundColor DarkGray
+Write-Host "  Legend:  [ OK ] Connected   [FAIL] Blocked   [SKIP] Wildcard   [INFO] UDP/IP Range" -ForegroundColor DarkGray
 Write-Host "─────────────────────────────────────────────────────" -ForegroundColor DarkGray
 
 $allResults = @()

@@ -3,6 +3,7 @@ W365-CloudPC,Registration,login.microsoftonline.com,443,TCP,Both,,Microsoft Entr
 W365-CloudPC,Registration,login.live.com,443,TCP,Both,,Microsoft account authentication,https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
 W365-CloudPC,Registration,enterpriseregistration.windows.net,443,TCP,Both,,Device registration,https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
 W365-CloudPC,Windows365 Service,*.infra.windows365.microsoft.com,443,TCP,CloudPC,Wildcard - cannot auto-test; verify DNS resolves,Windows 365 provisioning and health checks,https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
+W365-CloudPC,Windows365 Service,*.cmdagent.trafficmanager.net,443,TCP,CloudPC,Wildcard - cannot auto-test,Windows 365 command agent,https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
 W365-CloudPC,IoT Provisioning,global.azure-devices-provisioning.net,443,TCP,CloudPC,,IoT Hub device provisioning,https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
 W365-CloudPC,IoT Provisioning,global.azure-devices-provisioning.net,5671,TCP,CloudPC,,IoT Hub device provisioning AMQP,https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
 W365-CloudPC,IoT Hubs,hm-iot-in-prod-prap01.azure-devices.net,443,TCP,CloudPC,,Asia Pacific IoT Hub,https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
@@ -38,8 +39,8 @@ AVD-SessionHost,Monitoring,gcs.prod.monitoring.core.windows.net,443,TCP,CloudPC,
 AVD-SessionHost,Activation,azkms.core.windows.net,1688,TCP,CloudPC,,Windows KMS activation,https://learn.microsoft.com/en-us/azure/virtual-desktop/required-fqdn-endpoint
 AVD-SessionHost,Updates,mrsglobalsteus2prod.blob.core.windows.net,443,TCP,CloudPC,,AVD agent and SXS stack updates. Service tag: Storage,https://learn.microsoft.com/en-us/azure/virtual-desktop/required-fqdn-endpoint
 AVD-SessionHost,Portal,wvdportalstorageblob.blob.core.windows.net,443,TCP,CloudPC,,Azure portal support. Service tag: AzureCloud,https://learn.microsoft.com/en-us/azure/virtual-desktop/required-fqdn-endpoint
-AVD-SessionHost,Azure Infrastructure,169.254.169.254,80,TCP,CloudPC,,Azure Instance Metadata Service (IMDS) - Azure fabric IP; must not be proxied or intercepted,https://learn.microsoft.com/en-us/azure/virtual-desktop/azurecommunicationips
-AVD-SessionHost,Azure Infrastructure,168.63.129.16,80,TCP,CloudPC,,WireServer - session host health monitoring; Azure fabric IP; must not be proxied or intercepted,https://learn.microsoft.com/en-us/azure/virtual-desktop/azurecommunicationips
+AVD-SessionHost,Azure Infrastructure,169.254.169.254,80,TCP,CloudPC,,Azure Instance Metadata Service (IMDS),https://learn.microsoft.com/en-us/azure/virtual-desktop/required-fqdn-endpoint
+AVD-SessionHost,Azure Infrastructure,168.63.129.16,80,TCP,CloudPC,,Session host health monitoring,https://learn.microsoft.com/en-us/azure/virtual-desktop/required-fqdn-endpoint
 AVD-SessionHost,Certificates,oneocsp.microsoft.com,80,TCP,CloudPC,,OCSP certificate validation. Service tag: AzureFrontDoor.FirstParty,https://learn.microsoft.com/en-us/azure/virtual-desktop/required-fqdn-endpoint
 AVD-SessionHost,Certificates,www.microsoft.com,80,TCP,CloudPC,,Certificate chain,https://learn.microsoft.com/en-us/azure/virtual-desktop/required-fqdn-endpoint
 AVD-SessionHost,Certificates,*.aikcertaia.microsoft.com,80,TCP,CloudPC,Wildcard - cannot auto-test,AIK Certificate Authority,https://learn.microsoft.com/en-us/azure/virtual-desktop/required-fqdn-endpoint
@@ -122,7 +123,7 @@ Intune-Autopilot,Diagnostics,lgmsapesea.blob.core.windows.net,443,TCP,CloudPC,,A
 Intune-Autopilot,Diagnostics,lgmsapeaus.blob.core.windows.net,443,TCP,CloudPC,,Autopilot diagnostics upload - Australia,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
 Intune-Autopilot,Diagnostics,lgmsapeind.blob.core.windows.net,443,TCP,CloudPC,,Autopilot diagnostics upload - India,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
 Intune,Org Messages,ris.prod.api.personalization.ideas.microsoft.com,443,TCP,CloudPC,,Organizational messages - personalization service,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,WNS Push,sinwns1011421.wns.windows.com,443,TCP,CloudPC,,Windows Push Notification - Singapore-specific WNS node; may not resolve outside APAC tenants,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
+Intune,WNS Push,sinwns1011421.wns.windows.com,443,TCP,CloudPC,,Windows Push Notification - Singapore WNS node,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
 Intune,WNS Push,sin.notify.windows.com,443,TCP,CloudPC,,Windows Push Notification - Singapore notify node,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
 Intune,Android AOSP,intunecdnpeasd.azureedge.net,443,TCP,CloudPC,,Android AOSP - legacy domain (migrating to manage.microsoft.com March 2025),https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
 Intune-Autopilot,Windows Update,*.delivery.mp.microsoft.com,443,TCP,CloudPC,Wildcard - cannot auto-test,Windows Autopilot - Delivery MP,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
@@ -314,19 +315,3 @@ Intune,IP Ranges - Azure Front Door,150.171.97.0/24,80,TCP,CloudPC,IP range - ve
 Intune,IP Ranges - IPv6,2620:1ec:40::/48,80,TCP,CloudPC,IP range - verify firewall allows IPv6,Intune IPv6 range - Allow Required,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
 Intune,IP Ranges - IPv6,2620:1ec:49::/48,80,TCP,CloudPC,IP range - verify firewall allows IPv6,Intune IPv6 range - Allow Required,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
 Intune,IP Ranges - IPv6,2620:1ec:4a::/47,80,TCP,CloudPC,IP range - verify firewall allows IPv6,Intune IPv6 range - Allow Required,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape1.eus.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - East US,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape2.eus2.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - East US 2,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape3.cus.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - Central US,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape4.wus.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - West US,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape5.scus.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - South Central US,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape6.ncus.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - North Central US,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape7.neu.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - North Europe,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape8.neu.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - North Europe 2,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape9.neu.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - North Europe 3,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape10.weu.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - West Europe,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape11.weu.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - West Europe 2,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape12.weu.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - West Europe 3,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape13.jpe.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - Japan East,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape17.jpe.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - Japan East 2,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape18.jpe.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - Japan East 3,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
-Intune,MAA Attestation,intunemaape19.jpe.attest.azure.net,443,TCP,CloudPC,,Microsoft Azure Attestation - Japan East 4,https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
