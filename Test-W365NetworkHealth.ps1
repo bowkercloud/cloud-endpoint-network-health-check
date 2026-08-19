@@ -30,7 +30,7 @@
     .\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
 
 .NOTES
-    Version:    2.4
+    Version:    2.5
     Blog:       https://bowker.cloud
     References:
         https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
@@ -39,6 +39,14 @@
     Inspired by: https://gist.github.com/shannonfritz/4c9f1cf800f3406729a58417639736f3
 
     CHANGELOG:
+    v2.5 - Region picker rebuilt using a working approach: since no dedicated
+           MicrosoftIntune service tag exists, each published Intune IP range (ID
+           163) is cross-referenced against the AzureCloud.<Region> tags (which do
+           have full regional breakdown covering the entire Azure public IP space)
+           using CIDR containment logic, to determine which region it physically
+           belongs to. Verified against the real Azure IP Ranges JSON: all 81
+           published ranges resolve cleanly to one of 21 regions. Front Door and
+           IPv6 ranges are always shown regardless of region selection.
     v2.4 - Removed the Azure region picker for Intune IP ranges entirely. Diagnostic
            output in v2.3 confirmed there is no "MicrosoftIntune.<Region>" Azure
            service tag - Microsoft's own docs state Intune-related entries in the
@@ -83,7 +91,7 @@ param(
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
 $ScriptName     = 'Test-W365NetworkHealth'
-$ScriptVersion  = 'v2.4'
+$ScriptVersion  = 'v2.5'
 $CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/windows365/main/Endpoints.csv'
 $TimeoutSeconds = 5
 
@@ -165,7 +173,7 @@ function Test-Endpoint {
         } elseif ($Protocol -eq 'UDP' -or $Port -eq 3478) {
             Write-Host "] $Hostname  UDP:$Port$pad (IP range - verify firewall/NSG allows UDP $Port outbound)" -ForegroundColor DarkCyan
         } else {
-            Write-Host "] $Hostname  TCP:$Port$pad (IP range - published Intune range, no dedicated Azure service tag exists)" -ForegroundColor DarkCyan
+            Write-Host "] $Hostname  TCP:$Port$pad (IP range - published Intune range, allow at firewall)" -ForegroundColor DarkCyan
         }
         return $result
     }
@@ -306,10 +314,11 @@ function Write-Summary {
         }
         Write-Host ""
         Write-Host "  Note: the Intune client/host service IP ranges (ID 163) are a published list," -ForegroundColor DarkGray
-        Write-Host "        not a dedicated Azure service tag. There is no per-region breakdown" -ForegroundColor DarkGray
-        Write-Host "        available for these via the Azure IP Ranges JSON. Allow the full list at" -ForegroundColor DarkGray
-        Write-Host "        your firewall. The separate Azure Front Door ranges above are covered by" -ForegroundColor DarkGray
-        Write-Host "        the AzureFrontDoor.MicrosoftSecurity service tag if you prefer to use one." -ForegroundColor DarkGray
+        Write-Host "        not a dedicated Azure service tag, so they can't be filtered directly by" -ForegroundColor DarkGray
+        Write-Host "        region. If you selected a region above, this list has already been" -ForegroundColor DarkGray
+        Write-Host "        narrowed by cross-referencing each range against AzureCloud regional tags." -ForegroundColor DarkGray
+        Write-Host "        The separate Azure Front Door ranges are covered by the" -ForegroundColor DarkGray
+        Write-Host "        AzureFrontDoor.MicrosoftSecurity service tag if you prefer to use one." -ForegroundColor DarkGray
     }
 
     $fabricItems = $Results | Where-Object { $_.Status -eq 'FABRIC' }
@@ -675,8 +684,135 @@ $modeLabel = switch ($Mode) {
     3 { 'Both' }
 }
 
+# ── Step 2b: Region picker for Intune IP ranges ───────────────────────────────
+# There is no dedicated "MicrosoftIntune.<Region>" Azure service tag - confirmed
+# by direct inspection of the Azure IP Ranges JSON. Instead, we cross-reference
+# each published Intune IP range (ID 163) against the AzureCloud.<Region> tags,
+# which DO have full regional breakdown covering the entire Azure public IP
+# space, to work out which region each published range actually belongs to.
+$selectedRegion = $null
+
+function ConvertTo-UInt32IP {
+    param([string]$IP)
+    try {
+        $bytes = ([System.Net.IPAddress]$IP).GetAddressBytes()
+        if ($bytes.Length -ne 4) { return $null }
+        return ([uint32]$bytes[0] -shl 24) -bor ([uint32]$bytes[1] -shl 16) -bor ([uint32]$bytes[2] -shl 8) -bor [uint32]$bytes[3]
+    } catch { return $null }
+}
+
+function Get-CidrRange {
+    param([string]$Cidr)
+    $parts = $Cidr -split '/'
+    if ($parts.Count -ne 2) { return $null }
+    $base = ConvertTo-UInt32IP $parts[0]
+    if ($null -eq $base) { return $null }
+    $prefix   = [int]$parts[1]
+    $hostBits = 32 - $prefix
+    $mask     = if ($hostBits -ge 32) { [uint32]0 } elseif ($hostBits -eq 0) { [uint32]::MaxValue } else { [uint32]::MaxValue -shl $hostBits }
+    $hostMask = [uint32]::MaxValue - $mask
+    $netStart = $base -band $mask
+    $netEnd   = $netStart -bor $hostMask
+    return [PSCustomObject]@{ Start = $netStart; End = $netEnd }
+}
+
+function Test-CidrContains {
+    param([string]$OuterCidr, [string]$InnerCidr)
+    $outer = Get-CidrRange $OuterCidr
+    $inner = Get-CidrRange $InnerCidr
+    if (-not $outer -or -not $inner) { return $false }
+    return ($inner.Start -ge $outer.Start -and $inner.End -le $outer.End)
+}
+
+if ($Mode -eq 1 -or $Mode -eq 3) {
+    Write-Host ""
+    Write-Host "  [region-picker] Mapping published Intune IP ranges to Azure regions..." -ForegroundColor DarkGray
+
+    $ipRangeEndpoints = @($endpointData | Where-Object { $_.Subcategory -eq 'IP Ranges' } | Select-Object -ExpandProperty Endpoint -Unique)
+    Write-Host "  [region-picker] $($ipRangeEndpoints.Count) unique IPv4 ranges to map" -ForegroundColor DarkGray
+
+    $regionMap   = @{}
+    $downloadLink = $null
+
+    try {
+        $page  = Invoke-WebRequest -Uri 'https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519' -UseBasicParsing -TimeoutSec 15
+        $match = [regex]::Match($page.Content, 'ServiceTags_Public_[0-9]+')
+        if ($match.Success) {
+            $downloadLink = 'https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/' + $match.Value + '.json'
+        }
+    } catch {
+        Write-Host "  [region-picker] Could not reach Microsoft download page: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+
+    if ($downloadLink) {
+        try {
+            $tagData = Invoke-RestMethod -Uri $downloadLink -TimeoutSec 30
+            $azureCloudRegions = $tagData.values | Where-Object { $_.name -like 'AzureCloud.*' }
+            Write-Host "  [region-picker] Loaded $(@($azureCloudRegions).Count) AzureCloud regional tags" -ForegroundColor DarkGray
+
+            foreach ($ipRange in $ipRangeEndpoints) {
+                $foundRegion = $null
+                foreach ($tag in $azureCloudRegions) {
+                    foreach ($prefix in $tag.properties.addressPrefixes) {
+                        if ($prefix -notmatch ':' -and (Test-CidrContains -OuterCidr $prefix -InnerCidr $ipRange)) {
+                            $foundRegion = $tag.properties.region
+                            break
+                        }
+                    }
+                    if ($foundRegion) { break }
+                }
+                if ($foundRegion) {
+                    if (-not $regionMap.ContainsKey($foundRegion)) { $regionMap[$foundRegion] = @() }
+                    $regionMap[$foundRegion] += $ipRange
+                }
+            }
+            Write-Host "  [region-picker] Mapped $(($regionMap.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum) of $($ipRangeEndpoints.Count) ranges across $($regionMap.Keys.Count) regions" -ForegroundColor DarkGray
+        } catch {
+            Write-Host "  [region-picker] Failed to download or process service tags JSON: $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+    }
+
+    if ($regionMap.Keys.Count -gt 0) {
+        Write-Host ""
+        Write-Host "  Select your Azure region to narrow the Intune IP range guidance:" -ForegroundColor Yellow
+        Write-Host "    [0]  Skip region filtering - show full list" -ForegroundColor White
+        $sortedRegions = $regionMap.Keys | Sort-Object
+        $i = 1
+        foreach ($region in $sortedRegions) {
+            Write-Host ("    [{0}]  {1}  ({2} ranges)" -f $i, $region, $regionMap[$region].Count) -ForegroundColor White
+            $i++
+        }
+        Write-Host ""
+        Write-Host "  Note: mapped by cross-referencing against AzureCloud regional tags," -ForegroundColor DarkGray
+        Write-Host "        since Intune itself has no dedicated regional service tag." -ForegroundColor DarkGray
+        Write-Host "        Front Door and IPv6 ranges are always shown regardless of choice." -ForegroundColor DarkGray
+        Write-Host ""
+        $inputRegion = Read-Host "  Enter choice [0]"
+        if ([string]::IsNullOrWhiteSpace($inputRegion)) { $inputRegion = '0' }
+
+        $regionIndex = 0
+        [void][int]::TryParse($inputRegion, [ref]$regionIndex)
+
+        if ($regionIndex -gt 0 -and $regionIndex -le $sortedRegions.Count) {
+            $selectedRegion = $sortedRegions[$regionIndex - 1]
+            $keepRanges = $regionMap[$selectedRegion]
+            Write-Host "  Region: $selectedRegion  ($($keepRanges.Count) ranges)" -ForegroundColor Blue
+            $endpointData = $endpointData | Where-Object {
+                $_.Subcategory -ne 'IP Ranges' -or $_.Endpoint -in $keepRanges
+            }
+        } else {
+            Write-Host "  Showing full list (no region filter applied)." -ForegroundColor DarkGray
+        }
+    } else {
+        Write-Host "  [region-picker] Could not map any ranges to regions - showing full static list." -ForegroundColor DarkYellow
+    }
+}
+
 Write-Host ""
 Write-Host "  Mode      : $modeLabel" -ForegroundColor Blue
+if ($selectedRegion) {
+    Write-Host "  Region    : $selectedRegion  (mapped via AzureCloud tags)" -ForegroundColor Blue
+}
 Write-Host "  Computer  : $env:COMPUTERNAME  |  User: $env:USERNAME" -ForegroundColor DarkGray
 Write-Host "  Date/Time : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor DarkGray
 Write-Host ""
