@@ -30,13 +30,25 @@
     .\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
 
 .NOTES
-    Version:    2.1
+    Version:    2.2
     Blog:       https://bowker.cloud
     References:
         https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
         https://learn.microsoft.com/en-us/azure/virtual-desktop/required-fqdn-endpoint
         https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints
     Inspired by: https://gist.github.com/shannonfritz/4c9f1cf800f3406729a58417639736f3
+
+    CHANGELOG:
+    v2.2 - FAILED endpoint output now shows the Notes field for context (e.g. regional
+           WNS nodes). Region picker fetch failures now show explicit diagnostic
+           messages instead of failing silently. More resilient regex-based parsing
+           of the Microsoft service tags download link.
+    v2.1 - Added Azure region picker for Intune IP range guidance (fetches live from
+           Microsoft service tags JSON). IP ranges always shown as [INFO], never TCP
+           tested. Added FABRIC status for 168.63.129.16 and 169.254.169.254 (Azure
+           WireServer/IMDS) per https://learn.microsoft.com/en-us/azure/virtual-desktop/azurecommunicationips.
+           Removed deprecated *.cmdagent.trafficmanager.net (consolidated into
+           *.infra.windows365.microsoft.com per Microsoft).
 
     NOTE on Intune endpoints:
     Microsoft have deprecated the Office 365 Endpoint API (endpoints.office.com) for retrieving
@@ -57,7 +69,7 @@ param(
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
 $ScriptName     = 'Test-W365NetworkHealth'
-$ScriptVersion  = 'v2.1'
+$ScriptVersion  = 'v2.2'
 $CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/windows365/main/Endpoints.csv'
 $TimeoutSeconds = 5
 
