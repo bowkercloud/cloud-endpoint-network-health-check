@@ -57,7 +57,7 @@ param(
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
 $ScriptName     = 'Test-W365NetworkHealth'
-$ScriptVersion  = 'v1.1'
+$ScriptVersion  = 'v2.1'
 $CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/windows365/main/Endpoints.csv'
 $TimeoutSeconds = 5
 
