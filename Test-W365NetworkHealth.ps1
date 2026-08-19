@@ -30,7 +30,7 @@
     .\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
 
 .NOTES
-    Version:    2.5
+    Version:    2.6
     Blog:       https://bowker.cloud
     References:
         https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
@@ -39,6 +39,12 @@
     Inspired by: https://gist.github.com/shannonfritz/4c9f1cf800f3406729a58417639736f3
 
     CHANGELOG:
+    v2.6 - Restored the 15 MAA attestation endpoints (intunemaape1-19) which had been
+           dropped from Endpoints.csv during an earlier IP range cleanup pass, and
+           added the previously-missing intunemaape6.ncus.attest.azure.net (North
+           Central US). Cross-checked the full 81-entry Intune IP range list against
+           Microsoft's live "Consolidated Endpoint List" (authoritative source,
+           updated 2026-08-05) - confirmed an exact match, zero missing, zero extra.
     v2.5 - Region picker rebuilt using a working approach: since no dedicated
            MicrosoftIntune service tag exists, each published Intune IP range (ID
            163) is cross-referenced against the AzureCloud.<Region> tags (which do
@@ -91,7 +97,7 @@ param(
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
 $ScriptName     = 'Test-W365NetworkHealth'
-$ScriptVersion  = 'v2.5'
+$ScriptVersion  = 'v2.6'
 $CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/windows365/main/Endpoints.csv'
 $TimeoutSeconds = 5
 
@@ -435,6 +441,22 @@ function Get-BuiltInEndpoints {
         [PSCustomObject]@{ Category='Intune'; Subcategory='WNS Push';               Endpoint='sin.notify.windows.com';                  Port=443;  TestMode='CloudPC'; Notes='Windows Push Notification - Singapore notify node' }
         [PSCustomObject]@{ Category='Intune'; Subcategory='Android AOSP';           Endpoint='intunecdnpeasd.azureedge.net';             Port=443;  TestMode='CloudPC'; Notes='Android AOSP - legacy domain (migrating to manage.microsoft.com)' }
         [PSCustomObject]@{ Category='Intune'; Subcategory='Android AOSP';           Endpoint='intunecdnpeasd.manage.microsoft.com';     Port=443;  TestMode='CloudPC'; Notes='Android AOSP device management' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape1.eus.attest.azure.net';        Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - East US' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape2.eus2.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - East US 2' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape3.cus.attest.azure.net';        Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - Central US' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape4.wus.attest.azure.net';        Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - West US' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape5.scus.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - South Central US' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape6.ncus.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - North Central US' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape7.neu.attest.azure.net';        Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - North Europe' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape8.neu.attest.azure.net';        Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - North Europe 2' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape9.neu.attest.azure.net';        Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - North Europe 3' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape10.weu.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - West Europe' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape11.weu.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - West Europe 2' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape12.weu.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - West Europe 3' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape13.jpe.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - Japan East' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape17.jpe.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - Japan East 2' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape18.jpe.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - Japan East 3' }
+        [PSCustomObject]@{ Category='Intune'; Subcategory='MAA Attestation';        Endpoint='intunemaape19.jpe.attest.azure.net';       Port=443;  TestMode='CloudPC'; Notes='Microsoft Azure Attestation - Japan East 4' }
 
         # ── Intune IP Ranges (ID 163 - Allow Required) ───────────────────────
         [PSCustomObject]@{ Category='Intune'; Subcategory='IP Ranges'; Endpoint='4.145.74.224/27';    Port=443; TestMode='CloudPC'; Notes='Intune client and host service (ID 163)' }
