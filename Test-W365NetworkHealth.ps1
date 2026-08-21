@@ -30,7 +30,7 @@
     .\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
 
 .NOTES
-    Version:    3.5
+    Version:    3.6
     Blog:       https://bowker.cloud
     References:
         https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
@@ -64,9 +64,10 @@ param(
 # CONFIGURATION
 # -----------------------------------------------------------------------------
 $ScriptName     = 'Test-W365NetworkHealth'
-$ScriptVersion  = 'v3.5'
+$ScriptVersion  = 'v3.6'
 $CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/windows365/main/Endpoints.csv'
 $TimeoutSeconds = 5
+$script:InterceptDetected = $false   # set by the Step 2c control probe; read by Write-Summary
 # $MaxParallel comes from the parameter block - raise for speed, lower if a proxy rate-limits you
 
 # -----------------------------------------------------------------------------
@@ -999,13 +1000,33 @@ function Write-Summary {
         foreach ($t in $tlsItems) {
             Write-Host "    $($t.Hostname):$($t.Port)  [$($t.Category)]  - $($t.Detail)" -ForegroundColor Yellow
         }
-        Write-Host "    A reachable port with a failing handshake usually means a proxy is" -ForegroundColor DarkGray
-        Write-Host "    accepting the connection but refusing the hostname." -ForegroundColor DarkGray
-        Write-Host "    BUT: a 'TLS alert: InternalError' against CDN-hosted Microsoft content" -ForegroundColor DarkGray
-        Write-Host "    (Windows Update and Delivery Optimization especially) is often just the" -ForegroundColor DarkGray
-        Write-Host "    CDN rate-limiting concurrent handshakes rather than a policy block. If" -ForegroundColor DarkGray
-        Write-Host "    these move between different hosts on each run, that is what you are" -ForegroundColor DarkGray
-        Write-Host "    seeing - re-run with -MaxParallel 8, or -NoTlsCheck to confirm." -ForegroundColor DarkGray
+        # Two very different causes produce an identical TLS alert here, and the
+        # pre-flight control probe already told us which environment we are in.
+        # Leading with the CDN explanation when a local agent is provably
+        # brokering every connection points at the wrong one.
+        if ($script:InterceptDetected) {
+            Write-Host "    A local agent is intercepting traffic on this device (see the control" -ForegroundColor DarkGray
+            Write-Host "    probe result above), so it - not Microsoft - terminated this handshake." -ForegroundColor DarkGray
+            Write-Host "    An 'InternalError' alert from a ZTNA/SWG client usually means the agent" -ForegroundColor DarkGray
+            Write-Host "    could not broker that specific hostname: no matching policy, an upstream" -ForegroundColor DarkGray
+            Write-Host "    failure, or the destination excluded from its tunnel. Treat this as a" -ForegroundColor DarkGray
+            Write-Host "    real finding until proven otherwise - if it is Windows Update or" -ForegroundColor DarkGray
+            Write-Host "    Delivery Optimization content, patching may genuinely be broken." -ForegroundColor DarkGray
+            Write-Host "    To confirm: re-run and see whether the SAME hostname fails each time" -ForegroundColor DarkGray
+            Write-Host "    (agent policy) or a different one each run (CDN rate limiting), and" -ForegroundColor DarkGray
+            Write-Host "    compare against a device outside the agent." -ForegroundColor DarkGray
+        } else {
+            Write-Host "    A reachable port with a failing handshake usually means a proxy is" -ForegroundColor DarkGray
+            Write-Host "    accepting the connection but refusing the hostname." -ForegroundColor DarkGray
+            Write-Host "    BUT: a 'TLS alert: InternalError' against CDN-hosted Microsoft content" -ForegroundColor DarkGray
+            Write-Host "    (Windows Update and Delivery Optimization especially) is often just the" -ForegroundColor DarkGray
+            Write-Host "    CDN rate-limiting concurrent handshakes rather than a policy block. If" -ForegroundColor DarkGray
+            Write-Host "    these move between different hosts on each run, that is what you are" -ForegroundColor DarkGray
+            Write-Host "    seeing - re-run with -MaxParallel 8, or -NoTlsCheck to confirm." -ForegroundColor DarkGray
+        }
+        Write-Host "    Note: the whole windowsupdate.com zone is served by third-party CDNs on" -ForegroundColor DarkGray
+        Write-Host "    shared certificates (Akamai or Fastly depending on where you resolve" -ForegroundColor DarkGray
+        Write-Host "    from), so there is no Microsoft-certed host in it to probe instead." -ForegroundColor DarkGray
     }
 
     $warnItems = @($Results | Where-Object { $_.Status -eq 'WARN' })
@@ -1704,6 +1725,7 @@ try {
     if ($ctlAr.AsyncWaitHandle.WaitOne([TimeSpan]::FromSeconds(3), $false)) {
         try {
             $ctl.EndConnect($ctlAr)
+            $script:InterceptDetected = $true
             Write-Host "  Traffic intercept: YES - a local agent is terminating connections" -ForegroundColor DarkYellow
             Write-Host "  WARNING: a control probe to 203.0.113.1 (RFC 5737, unroutable by design)" -ForegroundColor DarkYellow
             Write-Host "           was ACCEPTED. Something on this device - a ZTNA/SWG client such as" -ForegroundColor DarkYellow
