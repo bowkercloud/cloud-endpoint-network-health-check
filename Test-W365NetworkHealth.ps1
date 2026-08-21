@@ -30,7 +30,7 @@
     .\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
 
 .NOTES
-    Version:    3.2
+    Version:    3.3
     Blog:       https://bowker.cloud
     References:
         https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
@@ -52,6 +52,7 @@ param(
     [string]$EndpointsCSV = '',
     [string]$OutputPath = '',
     [switch]$NoTlsCheck,
+    [switch]$SkipRegionPicker,
     # 12 rather than something higher: beyond about a dozen, wall-clock barely
     # improves (the slowest individual probes dominate, not the queue) while
     # CDN-hosted Microsoft endpoints start rate-limiting concurrent TLS
@@ -63,7 +64,7 @@ param(
 # CONFIGURATION
 # -----------------------------------------------------------------------------
 $ScriptName     = 'Test-W365NetworkHealth'
-$ScriptVersion  = 'v3.2'
+$ScriptVersion  = 'v3.3'
 $CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/windows365/main/Endpoints.csv'
 $TimeoutSeconds = 5
 # $MaxParallel comes from the parameter block - raise for speed, lower if a proxy rate-limits you
@@ -1442,9 +1443,37 @@ function Test-CidrContains {
     return ($inner.Start -ge $outer.Start -and $inner.End -le $outer.End)
 }
 
-if ($Mode -eq 1 -or $Mode -eq 3) {
+# Build a flat [start, end, region] table from the service tag prefixes, parsing
+# each CIDR exactly once.
+#
+# The previous approach compared every Intune range against every prefix string
+# directly, which re-parsed BOTH CIDRs on every comparison: 461,739 comparisons
+# and roughly 923,000 IPAddress parses, taking around 80 seconds. Parsing once
+# up front and then comparing plain integers gives identical results in about
+# 1.3 seconds - the download and JSON parse were never the slow part.
+function Build-PrefixTable {
+    param([array]$AzureCloudTags)
+
+    $table = New-Object System.Collections.ArrayList
+    foreach ($tag in $AzureCloudTags) {
+        $region = $tag.properties.region
+        if (-not $region) { continue }
+        foreach ($prefix in $tag.properties.addressPrefixes) {
+            if ($prefix.IndexOf(':') -ge 0) { continue }   # skip IPv6
+            $r = Get-CidrRange $prefix
+            if ($r) {
+                [void]$table.Add([PSCustomObject]@{ Start = $r.Start; End = $r.End; Region = $region })
+            }
+        }
+    }
+    return $table
+}
+
+if (($Mode -eq 1 -or $Mode -eq 3) -and -not $SkipRegionPicker) {
     Write-Host ""
     Write-Host "  [region-picker] Mapping published Intune IP ranges to Azure regions..." -ForegroundColor DarkGray
+    Write-Host "  [region-picker] This only narrows the IP-range guidance shown at the end." -ForegroundColor DarkGray
+    Write-Host "  [region-picker] No connectivity is tested here - use -SkipRegionPicker to skip." -ForegroundColor DarkGray
 
     $ipRangeEndpoints = @($endpointData | Where-Object { $_.Subcategory -eq 'IP Ranges' } | Select-Object -ExpandProperty Endpoint -Unique)
     Write-Host "  [region-picker] $($ipRangeEndpoints.Count) unique IPv4 ranges to map" -ForegroundColor DarkGray
@@ -1468,16 +1497,15 @@ if ($Mode -eq 1 -or $Mode -eq 3) {
             $azureCloudRegions = $tagData.values | Where-Object { $_.name -like 'AzureCloud.*' }
             Write-Host "  [region-picker] Loaded $(@($azureCloudRegions).Count) AzureCloud regional tags" -ForegroundColor DarkGray
 
+            $prefixTable = Build-PrefixTable -AzureCloudTags $azureCloudRegions
+            Write-Host "  [region-picker] Indexed $($prefixTable.Count) IPv4 prefixes" -ForegroundColor DarkGray
+
             foreach ($ipRange in $ipRangeEndpoints) {
+                $r = Get-CidrRange $ipRange
+                if (-not $r) { continue }
                 $foundRegion = $null
-                foreach ($tag in $azureCloudRegions) {
-                    foreach ($prefix in $tag.properties.addressPrefixes) {
-                        if ($prefix -notmatch ':' -and (Test-CidrContains -OuterCidr $prefix -InnerCidr $ipRange)) {
-                            $foundRegion = $tag.properties.region
-                            break
-                        }
-                    }
-                    if ($foundRegion) { break }
+                foreach ($row in $prefixTable) {
+                    if ($r.Start -ge $row.Start -and $r.End -le $row.End) { $foundRegion = $row.Region; break }
                 }
                 if ($foundRegion) {
                     if (-not $regionMap.ContainsKey($foundRegion)) { $regionMap[$foundRegion] = @() }
@@ -1504,6 +1532,9 @@ if ($Mode -eq 1 -or $Mode -eq 3) {
         Write-Host "  Note: mapped by cross-referencing against AzureCloud regional tags," -ForegroundColor DarkGray
         Write-Host "        since Intune itself has no dedicated regional service tag." -ForegroundColor DarkGray
         Write-Host "        Front Door and IPv6 ranges are always shown regardless of choice." -ForegroundColor DarkGray
+        Write-Host "        Only $($regionMap.Keys.Count) regions are listed because Microsoft publish Intune service" -ForegroundColor DarkGray
+        Write-Host "        IPs in those regions only - the other Azure regions have none. Region" -ForegroundColor DarkGray
+        Write-Host "        names are Microsoft's own service-tag spellings (e.g. 'switzerlandn')." -ForegroundColor DarkGray
         Write-Host ""
         $inputRegion = Read-Host "  Enter choice [0]"
         if ([string]::IsNullOrWhiteSpace($inputRegion)) { $inputRegion = '0' }
