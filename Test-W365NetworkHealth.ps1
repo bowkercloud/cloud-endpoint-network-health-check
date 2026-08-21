@@ -30,7 +30,7 @@
     .\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
 
 .NOTES
-    Version:    3.3
+    Version:    3.5
     Blog:       https://bowker.cloud
     References:
         https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
@@ -64,7 +64,7 @@ param(
 # CONFIGURATION
 # -----------------------------------------------------------------------------
 $ScriptName     = 'Test-W365NetworkHealth'
-$ScriptVersion  = 'v3.3'
+$ScriptVersion  = 'v3.5'
 $CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/windows365/main/Endpoints.csv'
 $TimeoutSeconds = 5
 # $MaxParallel comes from the parameter block - raise for speed, lower if a proxy rate-limits you
@@ -547,6 +547,7 @@ function Test-EndpointList {
                 Protocol     = $ep.Protocol
                 Notes        = $ep.Notes
                 WildcardNote = $ep.WildcardNote
+                KnownDead    = ($ep.WildcardNote -match '^\s*KnownDead')
                 Kind         = $kind
                 Key          = $null
                 ProbeTarget  = $null
@@ -668,6 +669,7 @@ function Test-EndpointList {
                 Rtt         = $null
                 Issuer      = ''
                 Notes       = $item.Notes
+                KnownDead   = $item.KnownDead
                 Timestamp   = $stamp
             }
 
@@ -725,9 +727,33 @@ function Test-EndpointList {
                         $result.Detail = 'WireServer reachable - running in Azure'
                         Write-ResultLine -Tag ' OK ' -Colour Green -Label $label -Trailer "(WireServer reachable - running in Azure)"
                     } else {
+                        # Cross-reference IMDS. If IMDS answered we are provably in Azure,
+                        # so "not an Azure VM" is already ruled out and offering it only sends
+                        # the reader down the wrong path. On Windows 365 the usual cause is
+                        # security context: WireServer does not answer a raw user-context
+                        # connect, but does answer once elevated.
+                        $imdsOk = $false
+                        if ($probeResults.ContainsKey('IMDS|169.254.169.254')) {
+                            $imdsOk = ($probeResults['IMDS|169.254.169.254'].Status -eq 'OK')
+                        }
                         $result.Status = 'NOTAZURE'
-                        $result.Detail = 'no WireServer response - not an Azure VM, or being intercepted'
-                        Write-ResultLine -Tag 'INFO' -Colour DarkCyan -Label $label -Trailer "(no response - not an Azure VM, or being intercepted)"
+
+                        # Port 53 is a special case and must not inherit the elevation
+                        # advice. Microsoft only require it when the VNet uses
+                        # Azure-provided DNS; with custom DNS servers there is nothing
+                        # listening and silence is the correct, expected answer. Telling
+                        # someone to re-run elevated for that is the same wrong-cause
+                        # problem v3.4 set out to remove.
+                        if ($item.Port -eq 53) {
+                            $result.Detail = 'no response on 53 - expected when the VNet uses custom DNS rather than Azure-provided DNS'
+                            Write-ResultLine -Tag 'INFO' -Colour DarkCyan -Label $label -Trailer "(only required with Azure-provided DNS - expected silence on custom DNS)"
+                        } elseif ($imdsOk) {
+                            $result.Detail = 'IMDS answered so this IS Azure - WireServer did not respond in this security context; re-run elevated'
+                            Write-ResultLine -Tag 'INFO' -Colour DarkCyan -Label $label -Trailer "(IMDS answered - you ARE in Azure; WireServer needs an elevated context)"
+                        } else {
+                            $result.Detail = 'no WireServer response - not an Azure VM, or being intercepted'
+                            Write-ResultLine -Tag 'INFO' -Colour DarkCyan -Label $label -Trailer "(no response - not an Azure VM, or being intercepted)"
+                        }
                     }
                 }
 
@@ -833,7 +859,20 @@ function Write-Summary {
     $notazure = @($Results | Where-Object { $_.Status -eq 'NOTAZURE' }).Count
     $total    = @($Results).Count
 
-    $problems = $fail + $dnsfail + $tlsfail
+    # DNS failures split two ways. Three names Microsoft publish have never
+    # resolved anywhere (see README); telling the reader to go and check their
+    # DNS forwarders for those is a wild goose chase. They are still probed, so
+    # if Microsoft ever fix them this reports the change rather than hiding it.
+    $dnsKnown = @($Results | Where-Object { $_.Status -eq 'DNSFAIL' -and $_.KnownDead }).Count
+    $dnsNew   = $dnsfail - $dnsKnown
+
+    # Any status not counted above would silently vanish from this summary while
+    # still being included in Total, so the numbers would stop adding up with no
+    # indication why. Catch that here rather than letting it drift.
+    $known    = @('OK','OK-PROBE','ZONE','FAIL','DNSFAIL','IPRANGE','UDPONLY','FABRIC','REFERENCE','INSPECT','TLSFAIL','WARN','NOTAZURE')
+    $other    = @($Results | Where-Object { $known -notcontains $_.Status }).Count
+
+    $problems = $fail + $dnsNew + $tlsfail
 
     Write-Host ""
     Write-Host "-----------------------------------------------------" -ForegroundColor DarkGray
@@ -849,11 +888,14 @@ function Write-Summary {
     }
     if ($problems -gt 0) {
         Write-Host "  FAILED           : $fail" -ForegroundColor Red
-        if ($dnsfail -gt 0) {
-            Write-Host "  DNS FAILURES     : $dnsfail  (name/zone did not resolve - fix DNS, not the firewall)" -ForegroundColor Magenta
+        if ($dnsNew -gt 0) {
+            Write-Host "  DNS FAILURES     : $dnsNew  (name/zone did not resolve - fix DNS, not the firewall)" -ForegroundColor Magenta
         }
     } else {
         Write-Host "  FAILED           : 0" -ForegroundColor Green
+    }
+    if ($dnsKnown -gt 0) {
+        Write-Host "  Known-dead names : $dnsKnown  (published by Microsoft, have never resolved - not your DNS)" -ForegroundColor DarkGray
     }
     if ($ranges -gt 0) {
         Write-Host "  IP ranges        : $ranges  (published CIDR list - allow at firewall, see below)" -ForegroundColor DarkCyan
@@ -877,7 +919,16 @@ function Write-Summary {
         Write-Host "  Warnings         : $warn" -ForegroundColor Yellow
     }
     if ($notazure -gt 0) {
-        Write-Host "  Azure-only checks: $notazure  (no response - expected unless run on the Cloud PC)" -ForegroundColor DarkCyan
+        # Mode 1 and 3 mean the user has told us they are ON a Cloud PC, so
+        # "expected unless run on the Cloud PC" is exactly the wrong thing to say.
+        if ($Mode -eq 1 -or $Mode -eq 3) {
+            Write-Host "  Azure fabric     : $notazure  (did not respond - see the note above; usually security context, not the network)" -ForegroundColor DarkCyan
+        } else {
+            Write-Host "  Azure-only checks: $notazure  (no response - expected unless run on the Cloud PC)" -ForegroundColor DarkCyan
+        }
+    }
+    if ($other -gt 0) {
+        Write-Host "  Unclassified     : $other  (status not counted above - please report this)" -ForegroundColor Yellow
     }
 
     # Latency picture - reachability is only half of what makes a Cloud PC usable
@@ -886,6 +937,23 @@ function Write-Summary {
         $sorted = $rtts | Sort-Object
         $median = $sorted[[int][math]::Floor($sorted.Count / 2)]
         Write-Host "  Connect latency  : median ${median} ms, min $($sorted[0]) ms, max $($sorted[-1]) ms  (over $($rtts.Count) probes)" -ForegroundColor DarkGray
+
+        # A TCP handshake cannot complete in under a millisecond or two against a
+        # remote endpoint - there is not enough time for the round trip. When a
+        # meaningful share of probes come back that fast, something on this device
+        # is completing the handshake locally: a ZTNA or SWG client, a transparent
+        # proxy, or similar. Deliberately behavioural rather than a vendor list, so
+        # it catches whatever the tenant happens to run.
+        $subMs = @($sorted | Where-Object { $_ -lt 2 }).Count
+        if ($subMs -ge 3) {
+            Write-Host ""
+            Write-Host "  NOTE: $subMs of $($rtts.Count) probes completed in under 2 ms. A TCP handshake to a" -ForegroundColor DarkYellow
+            Write-Host "        remote endpoint cannot complete that fast, so those connections are being" -ForegroundColor DarkYellow
+            Write-Host "        terminated locally - typically a ZTNA/SWG client or transparent proxy." -ForegroundColor DarkYellow
+            Write-Host "        The latency figures above do not describe the path to Microsoft, and on" -ForegroundColor DarkYellow
+            Write-Host "        non-443 ports an [ OK ] only proves the local agent accepted the socket." -ForegroundColor DarkYellow
+            Write-Host "        Port 443 results are unaffected: the TLS handshake still runs end to end." -ForegroundColor DarkYellow
+        }
     }
     Write-Host "-----------------------------------------------------" -ForegroundColor DarkGray
 
@@ -949,7 +1017,8 @@ function Write-Summary {
         }
     }
 
-    $dnsItems = @($Results | Where-Object { $_.Status -eq 'DNSFAIL' })
+    $dnsItems  = @($Results | Where-Object { $_.Status -eq 'DNSFAIL' -and -not $_.KnownDead })
+    $deadItems = @($Results | Where-Object { $_.Status -eq 'DNSFAIL' -and $_.KnownDead })
     if ($dnsItems.Count -gt 0) {
         Write-Host ""
         Write-Host "  DNS FAILURES (the name never resolved - this is a DNS problem, not a port problem):" -ForegroundColor Magenta
@@ -959,6 +1028,17 @@ function Write-Summary {
             Write-Host $line -ForegroundColor Magenta
         }
         Write-Host "    Check DNS forwarders, split-horizon DNS, and any DNS-layer filtering product." -ForegroundColor DarkGray
+    }
+    if ($deadItems.Count -gt 0) {
+        Write-Host ""
+        Write-Host "  KNOWN-DEAD NAMES (nothing to fix - these are documentation errors at Microsoft):" -ForegroundColor DarkGray
+        foreach ($d in $deadItems) {
+            $why = if ($d.Notes) { " - $($d.Notes)" } else { '' }
+            Write-Host "    $($d.Hostname)  [$($d.Category)]$why" -ForegroundColor DarkGray
+        }
+        Write-Host "    Microsoft publish these but they have never resolved, from any network," -ForegroundColor DarkGray
+        Write-Host "    so seeing them here says nothing about your DNS. They are still probed" -ForegroundColor DarkGray
+        Write-Host "    on every run, so if Microsoft ever bring them up you will see it here." -ForegroundColor DarkGray
     }
 
     # -- Wildcards confirmed only at the zone level ---------------------------
@@ -1585,6 +1665,14 @@ if (-not $isSystem) {
     Write-Host "        attestation run as SYSTEM, which can have a different proxy and" -ForegroundColor DarkYellow
     Write-Host "        firewall path. To test that path, re-run under SYSTEM:" -ForegroundColor DarkYellow
     Write-Host "        psexec.exe -accepteula -i -s powershell.exe" -ForegroundColor DarkGray
+    if (-not $isAdmin) {
+        # Elevation alone changes results, well short of SYSTEM: the WireServer
+        # fabric IP does not answer a raw connect from a non-elevated process on
+        # a Cloud PC, and does as soon as the console is elevated.
+        Write-Host "        Elevation alone also matters - the Azure fabric IPs do not answer a" -ForegroundColor DarkYellow
+        Write-Host "        non-elevated connect. Try an elevated console before reading too much" -ForegroundColor DarkYellow
+        Write-Host "        into any fabric result below." -ForegroundColor DarkYellow
+    }
 }
 
 # Proxy configuration. TCP sockets bypass WinHTTP/WinINET entirely, so if a
@@ -1602,6 +1690,34 @@ try {
     } else {
         Write-Host "  Proxy            : none configured for HTTPS" -ForegroundColor DarkGray
     }
+} catch { }
+
+# Control probe. 203.0.113.1 is RFC 5737 TEST-NET-3: reserved for documentation
+# and never routed on the public internet, so nothing anywhere should ever accept
+# a connection on it. If something does, a local agent is accepting on behalf of
+# every destination and an [ OK ] no longer proves traffic reached Microsoft.
+# WinINET proxy detection above cannot see this - ZTNA and SWG clients intercept
+# below that layer, at the WFP/driver level, and set no proxy at all.
+try {
+    $ctl   = New-Object System.Net.Sockets.TcpClient
+    $ctlAr = $ctl.BeginConnect('203.0.113.1', 443, $null, $null)
+    if ($ctlAr.AsyncWaitHandle.WaitOne([TimeSpan]::FromSeconds(3), $false)) {
+        try {
+            $ctl.EndConnect($ctlAr)
+            Write-Host "  Traffic intercept: YES - a local agent is terminating connections" -ForegroundColor DarkYellow
+            Write-Host "  WARNING: a control probe to 203.0.113.1 (RFC 5737, unroutable by design)" -ForegroundColor DarkYellow
+            Write-Host "           was ACCEPTED. Something on this device - a ZTNA/SWG client such as" -ForegroundColor DarkYellow
+            Write-Host "           Global Secure Access, Zscaler or Netskope, or a transparent proxy -" -ForegroundColor DarkYellow
+            Write-Host "           answers on behalf of every destination. TCP-only results below show" -ForegroundColor DarkYellow
+            Write-Host "           that agent accepting, not the endpoint being reachable. Port 443" -ForegroundColor DarkYellow
+            Write-Host "           results still hold: the TLS handshake runs end to end." -ForegroundColor DarkYellow
+        } catch {
+            Write-Host "  Traffic intercept: none detected (control probe correctly refused)" -ForegroundColor DarkGray
+        }
+    } else {
+        Write-Host "  Traffic intercept: none detected (control probe correctly timed out)" -ForegroundColor DarkGray
+    }
+    $ctl.Close()
 } catch { }
 
 # IPv6 egress - six IPv6 ranges are in the endpoint list but nothing tested
