@@ -30,7 +30,7 @@
     .\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
 
 .NOTES
-    Version:    3.7
+    Version:    3.8
     Blog:       https://bowker.cloud
     References:
         https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
@@ -64,7 +64,7 @@ param(
 # CONFIGURATION
 # -----------------------------------------------------------------------------
 $ScriptName     = 'Test-W365NetworkHealth'
-$ScriptVersion  = 'v3.7'
+$ScriptVersion  = 'v3.8'
 $CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/windows365/main/Endpoints.csv'
 $TimeoutSeconds = 5
 $script:InterceptDetected = $false   # set by the Step 2c control probe; read by Write-Summary
@@ -122,7 +122,12 @@ $WildcardProbes = @{
     '*.delivery.mp.microsoft.com'                 = 'fe3.delivery.mp.microsoft.com'
     '*.digicert.com'                              = 'ocsp.digicert.com'
     '*.cdn.office.net'                            = 'res.cdn.office.net'
-    '*.manage.microsoft.com'                      = 'm.manage.microsoft.com'
+    # a.manage rather than m.manage: m.manage sits on Azure CDN and serves a
+    # *.azureedge.net certificate, so a TLS check there proves nothing about the
+    # hostname. a.manage returns a certificate that actually covers the name -
+    # which matters, because Microsoft explicitly do not support SSL inspection
+    # on *.manage.microsoft.com and this is where we would detect it.
+    '*.manage.microsoft.com'                      = 'a.manage.microsoft.com'
     '*.notify.windows.com'                        = 'db5.notify.windows.com'
     '*.wns.windows.com'                           = 'client.wns.windows.com'
     '*.windowsupdate.com'                         = 'download.windowsupdate.com'
@@ -459,7 +464,7 @@ function Invoke-ProbeBatch {
                   AddArgument($w.Target).
                   AddArgument($w.Port).
                   AddArgument($TimeoutSec).
-                  AddArgument(-not $NoTlsCheck)
+                  AddArgument((-not $NoTlsCheck) -and (-not $w.NoTls))
         [void]$jobs.Add([PSCustomObject]@{
             Key    = $w.Key
             PS     = $ps
@@ -549,6 +554,7 @@ function Test-EndpointList {
                 Notes        = $ep.Notes
                 WildcardNote = $ep.WildcardNote
                 KnownDead    = ($ep.WildcardNote -match '^\s*KnownDead')
+                NoTls        = ($ep.WildcardNote -match '^\s*NoTls')
                 Kind         = $kind
                 Key          = $null
                 ProbeTarget  = $null
@@ -559,7 +565,7 @@ function Test-EndpointList {
                     $item.ProbeTarget = $epHost
                     $item.Key = "TCP|$epHost|$portNum"
                     if (-not $work.ContainsKey($item.Key)) {
-                        $work[$item.Key] = [PSCustomObject]@{ Key = $item.Key; Kind = 'TCP'; Target = $epHost; Port = $portNum }
+                        $work[$item.Key] = [PSCustomObject]@{ Key = $item.Key; Kind = 'TCP'; Target = $epHost; Port = $portNum; NoTls = $item.NoTls }
                     }
                 }
 
@@ -595,7 +601,7 @@ function Test-EndpointList {
                     $item.ProbeTarget = $epHost
                     $item.Key = "TCP|$epHost|$portNum"
                     if (-not $work.ContainsKey($item.Key)) {
-                        $work[$item.Key] = [PSCustomObject]@{ Key = $item.Key; Kind = 'TCP'; Target = $epHost; Port = $portNum }
+                        $work[$item.Key] = [PSCustomObject]@{ Key = $item.Key; Kind = 'TCP'; Target = $epHost; Port = $portNum; NoTls = $item.NoTls }
                     }
                 }
                 'Wildcard' {
@@ -606,7 +612,7 @@ function Test-EndpointList {
                         $item.ProbeTarget = $probe
                         $item.Key = "TCP|$probe|$portNum"
                         if (-not $work.ContainsKey($item.Key)) {
-                            $work[$item.Key] = [PSCustomObject]@{ Key = $item.Key; Kind = 'TCP'; Target = $probe; Port = $portNum }
+                            $work[$item.Key] = [PSCustomObject]@{ Key = $item.Key; Kind = 'TCP'; Target = $probe; Port = $portNum; NoTls = $item.NoTls }
                         }
                     } else {
                         $zone = Get-WildcardZone -Pattern $epHost
@@ -1035,23 +1041,22 @@ function Write-Summary {
             Write-Host "    compare against a device outside the agent." -ForegroundColor DarkGray
         } else {
             Write-Host "    A reachable port with a failing handshake usually means a proxy is" -ForegroundColor DarkGray
-            Write-Host "    accepting the connection but refusing the hostname." -ForegroundColor DarkGray
-            Write-Host "    BUT: a 'TLS alert: InternalError' against CDN-hosted Microsoft content" -ForegroundColor DarkGray
-            Write-Host "    (Windows Update and Delivery Optimization especially) is often just the" -ForegroundColor DarkGray
-            Write-Host "    CDN rate-limiting concurrent handshakes rather than a policy block. If" -ForegroundColor DarkGray
-            Write-Host "    these move between different hosts on each run, that is what you are" -ForegroundColor DarkGray
-            Write-Host "    seeing - re-run with -MaxParallel 8, or -NoTlsCheck to confirm." -ForegroundColor DarkGray
+            Write-Host "    accepting the connection but refusing the hostname. Check whether the" -ForegroundColor DarkGray
+            Write-Host "    same host fails on every run - a policy block is consistent." -ForegroundColor DarkGray
         }
         # Only mention the CDN-shared-certificate situation when a failure is
         # actually in one of those zones, otherwise it is a stray fact about a
         # hostname that is not on screen.
-        $cdnZones = @('windowsupdate.com','delivery.mp.microsoft.com','dl.delivery.mp.microsoft.com')
+        $cdnZones = @('windowsupdate.com','delivery.mp.microsoft.com','adl.windows.com')
         $hitCdn = @($tlsItems | Where-Object { $h = $_.Hostname; @($cdnZones | Where-Object { $h -like "*$_" }).Count -gt 0 })
         if ($hitCdn.Count -gt 0) {
-            Write-Host "    Note: Windows Update and Delivery Optimization content is served by" -ForegroundColor DarkGray
-            Write-Host "    third-party CDNs on shared certificates (Akamai or Fastly depending on" -ForegroundColor DarkGray
-            Write-Host "    where you resolve from), so there is no Microsoft-certed host in those" -ForegroundColor DarkGray
-            Write-Host "    zones to probe instead." -ForegroundColor DarkGray
+            Write-Host "    Note: these are CDN-fronted content endpoints. Every host in those zones" -ForegroundColor DarkGray
+            Write-Host "    serves a CDN certificate (Akamai or Fastly) that does not cover the" -ForegroundColor DarkGray
+            Write-Host "    hostname, so a handshake there can fail for reasons that have nothing to" -ForegroundColor DarkGray
+            Write-Host "    do with your network. They are normally excluded from TLS validation for" -ForegroundColor DarkGray
+            Write-Host "    that reason - if you are seeing them here, TLS was forced on somehow." -ForegroundColor DarkGray
+            Write-Host "    What matters for these is port 80: the content is signed and fetched" -ForegroundColor DarkGray
+            Write-Host "    over HTTP, so check the port 80 result above instead." -ForegroundColor DarkGray
         }
     }
 

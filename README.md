@@ -14,19 +14,19 @@ Inspired by [Shannon Fritz's original gist](https://gist.github.com/shannonfritz
 
 Network connectivity issues are one of the most common causes of Windows 365 provisioning failures and poor Cloud PC experiences. Microsoft's requirements are spread across four separate documentation pages. This script brings them all together and tests them in one run.
 
-**404 endpoint entries** across:
+**442 endpoint entries** across:
 
 | Category | Entries | Covers |
 |----------|---------|--------|
-| `Intune` | 231 | Core service, Win32 apps, WNS push, Delivery Optimization, MAA attestation, published IP ranges |
-| `Intune-Autopilot` | 54 | Windows Update, NTP, TPM attestation, diagnostics upload |
-| `W365-CloudPC` | 26 | Provisioning, IoT hubs, registration |
-| `AVD-SessionHost` | 23 | Session host required endpoints, Azure fabric IPs |
+| `Intune` | 254 | Core service, Win32 apps, WNS push, Delivery Optimization, MAA attestation, published IP ranges |
+| `Intune-Autopilot` | 59 | Windows Update, NTP, TPM attestation, diagnostics upload |
+| `W365-CloudPC` | 28 | Provisioning, IoT hubs, registration |
+| `AVD-SessionHost` | 24 | Session host required endpoints, Azure fabric IPs |
 | `Intune-RemoteHelp` | 23 | Remote Help (only if you use the feature) |
-| `Client-AVD` | 18 | End user device endpoints |
+| `Client-AVD` | 20 | End user device endpoints |
 | `Client-AVD-CertCA` | 11 | Azure Certificate Authority CRL/OCSP, for closed networks |
-| `AVD-SessionHost-Optional` | 9 | Session host optional endpoints |
-| `Intune-Store` | 5 | Microsoft Store / app install |
+| `AVD-SessionHost-Optional` | 10 | Session host optional endpoints |
+| `Intune-Store` | 9 | Microsoft Store / app install |
 | `Intune-RemoteHelp-GCC` | 4 | Remote Help for US Government tenants |
 
 Conditional feature sets live in their own categories, so it is obvious which apply to your tenant and which you can ignore.
@@ -107,13 +107,15 @@ powershell -ExecutionPolicy Bypass -Command "irm https://bowker.cloud/w365check 
 
 The script loads endpoints from `Endpoints.csv` (downloaded automatically from this repo). Each entry includes the endpoint, port, protocol, test mode, and a direct reference link to the relevant Microsoft documentation. Probes run concurrently, and identical host:port pairs are deduplicated so shared endpoints are tested once.
 
-**Wildcards are tested, not skipped.** Of the 43 wildcard entries, most are validated by connecting to a real, verified host inside the zone - `*.wvd.microsoft.com` via `rdbroker.wvd.microsoft.com`, `*.manage.microsoft.com` via `m.manage.microsoft.com`, and so on. Where no stable public label exists, the parent zone is queried for an authoritative SOA record instead, which still catches DNS-layer filtering.
+**Wildcards are tested, not skipped.** Of the 52 wildcard entries, most are validated by connecting to a real, verified host inside the zone - `*.wvd.microsoft.com` via `rdbroker.wvd.microsoft.com`, `*.manage.microsoft.com` via `m.manage.microsoft.com`, and so on. Where no stable public label exists, the parent zone is queried for an authoritative SOA record instead, which still catches DNS-layer filtering.
 
 **TLS, not just TCP.** A plain TCP connect to port 443 cannot tell an allowed endpoint from a proxy that accepts the connection and blocks the hostname. Every 443 endpoint gets a real TLS handshake with SNI, and the certificate chain is walked to its root and compared against the public root CA programme.
 
 **UDP is genuinely tested.** RDP Shortpath sends a real STUN binding request on UDP 3478 - on both the session host and the client side, since Microsoft require it for both. NTP sends a real SNTP packet and reports stratum plus clock skew; skew over five minutes is called out, because it breaks Entra authentication in ways that look unrelated.
 
 **Azure fabric IPs are probed, not assumed.** IMDS gets a real HTTP request with the `Metadata` header; WireServer is checked on ports 80, 32526 and 53. If IMDS answers, the script knows it is in Azure and stops offering "not an Azure VM" as an explanation for a silent WireServer - the usual cause there is security context, not the network.
+
+**Both ports are tested where Microsoft list both.** Many endpoint sets are documented as "TCP: 80, 443", and testing only 443 misses the port that carries the payload for Windows Update and Delivery Optimization. Every port-80 entry was verified to actually listen there before being added; three hosts documented as 80,443 only ever answer on 443, so they are not tested on 80 rather than reporting a permanent false failure.
 
 **Published IP ranges are deliberately not probed.** The CIDR entries collapse into grouped summary lines. Testing individual IPs inside a global range produces misleading results, because not every published address serves traffic from every region at any given time. Allow them at the firewall and verify by rule. The full list still exports via `-OutputPath`.
 
@@ -145,7 +147,7 @@ Some endpoints appear in Microsoft's documentation but are not live. Rather than
 | File | Description |
 |------|-------------|
 | `Test-W365NetworkHealth.ps1` | The script |
-| `Endpoints.csv` | All 404 entries with category, port, protocol, test mode, notes, and a documentation reference |
+| `Endpoints.csv` | All 442 entries with category, port, protocol, test mode, notes, and a documentation reference |
 
 `-OutputPath` exports every row with: `Category, Subcategory, Hostname, Port, Status, TestedAs, Detail, Rtt, Issuer, Notes, Timestamp`. `TestedAs` records which host was probed for each wildcard and `Issuer` the certificate chain root, so results are auditable rather than something you take on trust.
 
@@ -210,7 +212,7 @@ Validated against live DNS. Reported rather than hidden:
 
 **Wildcards confirmed at zone level only.** Some wildcard entries have no stable public hostname to connect to. DNS resolution is confirmed but the port is not proven open - verify your firewall rule covers the whole wildcard.
 
-**CDN rate limiting can look like a TLS failure.** If `[TLS!]` results move between different hostnames on each run, that is a CDN rate-limiting concurrent handshakes, not a policy block. Re-run with `-MaxParallel 8` or `-NoTlsCheck` to confirm. A genuine block fails consistently on the same host.
+**Some endpoints are excluded from TLS validation, deliberately.** Windows Update and Delivery Optimization content is served by third-party CDNs (Akamai, Fastly) that present a certificate not covering the hostname - `fallback.tls.fastly.net` or `a248.e.akamai.net`. Every candidate host in those zones was tested and none has a matching certificate, so a TLS check there proves nothing and fails unpredictably. Those rows are marked `NoTls` in the CSV and TCP-tested only. What matters for them is **port 80**: the content is signed and fetched over HTTP.
 
 **Run it from the right place.** Mode 1 on the Cloud PC or a VM in the same Azure VNet. Mode 2 on the physical client device on the end user's network.
 
