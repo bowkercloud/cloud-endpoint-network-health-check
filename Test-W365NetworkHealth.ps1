@@ -30,7 +30,7 @@
     .\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
 
 .NOTES
-    Version:    3.6
+    Version:    3.7
     Blog:       https://bowker.cloud
     References:
         https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
@@ -64,7 +64,7 @@ param(
 # CONFIGURATION
 # -----------------------------------------------------------------------------
 $ScriptName     = 'Test-W365NetworkHealth'
-$ScriptVersion  = 'v3.6'
+$ScriptVersion  = 'v3.7'
 $CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/windows365/main/Endpoints.csv'
 $TimeoutSeconds = 5
 $script:InterceptDetected = $false   # set by the Step 2c control probe; read by Write-Summary
@@ -845,6 +845,9 @@ function Test-EndpointList {
 function Write-Summary {
     param([array]$Results)
 
+    # Set when the latency heuristic sees locally-terminated connections.
+    $localTermination = $false
+
     $ok       = @($Results | Where-Object { $_.Status -eq 'OK'       }).Count
     $okProbe  = @($Results | Where-Object { $_.Status -eq 'OK-PROBE' }).Count
     $zone     = @($Results | Where-Object { $_.Status -eq 'ZONE'     }).Count
@@ -946,6 +949,7 @@ function Write-Summary {
         # proxy, or similar. Deliberately behavioural rather than a vendor list, so
         # it catches whatever the tenant happens to run.
         $subMs = @($sorted | Where-Object { $_ -lt 2 }).Count
+        if ($subMs -ge 3) { $localTermination = $true }
         if ($subMs -ge 3) {
             Write-Host ""
             Write-Host "  NOTE: $subMs of $($rtts.Count) probes completed in under 2 ms. A TCP handshake to a" -ForegroundColor DarkYellow
@@ -1000,13 +1004,27 @@ function Write-Summary {
         foreach ($t in $tlsItems) {
             Write-Host "    $($t.Hostname):$($t.Port)  [$($t.Category)]  - $($t.Detail)" -ForegroundColor Yellow
         }
-        # Two very different causes produce an identical TLS alert here, and the
-        # pre-flight control probe already told us which environment we are in.
-        # Leading with the CDN explanation when a local agent is provably
-        # brokering every connection points at the wrong one.
-        if ($script:InterceptDetected) {
-            Write-Host "    A local agent is intercepting traffic on this device (see the control" -ForegroundColor DarkGray
-            Write-Host "    probe result above), so it - not Microsoft - terminated this handshake." -ForegroundColor DarkGray
+        # Two very different causes produce an identical TLS alert here, and this
+        # script already has TWO independent signals for which environment we are
+        # in. Both must be consulted, because they detect different things:
+        #
+        #   - The 203.0.113.1 control probe catches agents that intercept
+        #     everything (transparent proxies).
+        #   - The sub-2ms latency heuristic catches SELECTIVE agents. A ZTNA
+        #     client such as Global Secure Access only tunnels its configured
+        #     destinations, so an unroutable test address is correctly left
+        #     alone and the control probe stays silent, while Microsoft traffic
+        #     is still terminated locally.
+        #
+        # Selective interception is the common case, so keying only off the
+        # control probe misses most real deployments.
+        if ($script:InterceptDetected -or $localTermination) {
+            # Name the signal that actually fired. Pointing at the control probe
+            # when the control probe stayed silent is its own wrong detail.
+            $why = if ($script:InterceptDetected) { 'the control probe above was accepted' }
+                   else { 'the sub-2ms probe timings above' }
+            Write-Host "    A local agent is intercepting traffic on this device ($why)," -ForegroundColor DarkGray
+            Write-Host "    so it - not Microsoft - terminated this handshake." -ForegroundColor DarkGray
             Write-Host "    An 'InternalError' alert from a ZTNA/SWG client usually means the agent" -ForegroundColor DarkGray
             Write-Host "    could not broker that specific hostname: no matching policy, an upstream" -ForegroundColor DarkGray
             Write-Host "    failure, or the destination excluded from its tunnel. Treat this as a" -ForegroundColor DarkGray
@@ -1024,9 +1042,17 @@ function Write-Summary {
             Write-Host "    these move between different hosts on each run, that is what you are" -ForegroundColor DarkGray
             Write-Host "    seeing - re-run with -MaxParallel 8, or -NoTlsCheck to confirm." -ForegroundColor DarkGray
         }
-        Write-Host "    Note: the whole windowsupdate.com zone is served by third-party CDNs on" -ForegroundColor DarkGray
-        Write-Host "    shared certificates (Akamai or Fastly depending on where you resolve" -ForegroundColor DarkGray
-        Write-Host "    from), so there is no Microsoft-certed host in it to probe instead." -ForegroundColor DarkGray
+        # Only mention the CDN-shared-certificate situation when a failure is
+        # actually in one of those zones, otherwise it is a stray fact about a
+        # hostname that is not on screen.
+        $cdnZones = @('windowsupdate.com','delivery.mp.microsoft.com','dl.delivery.mp.microsoft.com')
+        $hitCdn = @($tlsItems | Where-Object { $h = $_.Hostname; @($cdnZones | Where-Object { $h -like "*$_" }).Count -gt 0 })
+        if ($hitCdn.Count -gt 0) {
+            Write-Host "    Note: Windows Update and Delivery Optimization content is served by" -ForegroundColor DarkGray
+            Write-Host "    third-party CDNs on shared certificates (Akamai or Fastly depending on" -ForegroundColor DarkGray
+            Write-Host "    where you resolve from), so there is no Microsoft-certed host in those" -ForegroundColor DarkGray
+            Write-Host "    zones to probe instead." -ForegroundColor DarkGray
+        }
     }
 
     $warnItems = @($Results | Where-Object { $_.Status -eq 'WARN' })
