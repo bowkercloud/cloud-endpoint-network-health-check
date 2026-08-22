@@ -1,16 +1,26 @@
-#Requires -Version 5.1
 <#
 .SYNOPSIS
-    Windows 365 & AVD Network Health Check
+    Microsoft Cloud Endpoint Network Health Check
+    PowerShell network validation for Microsoft Intune, Windows 365 and Azure Virtual Desktop.
 
 .DESCRIPTION
-    Tests network connectivity to all endpoints required for Windows 365 Cloud PCs and Azure Virtual Desktop.
-    Can be run from the Cloud PC (Host Network) or from the physical client device (Client Network).
+    Tests network connectivity to the endpoints required by Microsoft Intune, Windows 365 and
+    Azure Virtual Desktop in the commercial Microsoft cloud.
+
+    Select a workload to choose WHAT is validated, and a mode to choose WHERE it is validated
+    from - a host / cloud network, a physical client device, or both.
 
     Endpoints are loaded from a companion Endpoints.csv file (recommended) or from built-in defaults.
 
     Run directly from GitHub:
     powershell -ExecutionPolicy Bypass -Command "irm https://bowker.cloud/w365check | iex"
+
+.PARAMETER Workload
+    What to validate. Prompted if not supplied; Enter selects All.
+    All        = All Cloud Endpoint Requirements
+    Intune     = Microsoft Intune
+    Windows365 = Windows 365, including the AVD, Intune and Azure platform dependencies it relies on
+    AVD        = Azure Virtual Desktop
 
 .PARAMETER Mode
     1 = Host / Cloud Network (Cloud PC, AVD session host, or Azure VNet VM)
@@ -25,10 +35,24 @@
 .PARAMETER OutputPath
     Optional path to export results to a CSV file.
 
+.PARAMETER NoTlsCheck
+    Skip the TLS handshake and certificate validation on port 443; TCP connect only.
+
+.PARAMETER NoIntuneIPFilter
+    Never offer the optional Intune IP range filtering. Alias: -NoRegionFilter.
+
+.PARAMETER SkipRegionPicker
+    Original name for -NoIntuneIPFilter, retained for backwards compatibility.
+
+.PARAMETER MaxParallel
+    Number of concurrent probes. Default 12.
+
 .EXAMPLE
     .\Test-W365NetworkHealth.ps1
-    .\Test-W365NetworkHealth.ps1 -Mode 1 -OutputPath C:\Temp\results.csv
-    .\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
+    .\Test-W365NetworkHealth.ps1 -Workload Intune -Mode 2
+    .\Test-W365NetworkHealth.ps1 -Workload Windows365 -Mode 1
+    .\Test-W365NetworkHealth.ps1 -Workload AVD -Mode 3
+    .\Test-W365NetworkHealth.ps1 -Workload All -Mode 3 -OutputPath C:\Temp\results.csv
 
 .NOTES
     Version:    4.0
@@ -46,6 +70,8 @@
     and FQDNs no longer return accurate data from the Office 365 Endpoint service."
     This script uses the static consolidated list from the Microsoft documentation instead.
 #>
+
+#Requires -Version 5.1
 
 [CmdletBinding()]
 param(
@@ -105,7 +131,8 @@ function Write-Banner {
 "@
     Write-Host $banner -ForegroundColor Cyan
     Write-Host "  $ScriptName  $ScriptVersion" -ForegroundColor Blue
-    Write-Host "  Windows 365 & AVD Network Health Check" -ForegroundColor Blue
+    Write-Host "  Microsoft Cloud Endpoint Network Health Check" -ForegroundColor Blue
+    Write-Host "  Microsoft Intune, Windows 365 & Azure Virtual Desktop" -ForegroundColor Blue
     Write-Host ""
 }
 
@@ -959,7 +986,7 @@ function Write-Summary {
         if ($Mode -eq 1 -or $Mode -eq 3) {
             Write-Host "  Azure fabric     : $notazure  (did not respond - see the note above; usually security context, not the network)" -ForegroundColor DarkCyan
         } else {
-            Write-Host "  Azure-only checks: $notazure  (no response - expected unless run on the Cloud PC)" -ForegroundColor DarkCyan
+            Write-Host "  Azure-only checks: $notazure  (no response - expected unless run on an Azure host)" -ForegroundColor DarkCyan
         }
     }
     if ($other -gt 0) {
@@ -1678,7 +1705,7 @@ if ($Workload -ne 'All') {
 if ($Workload -eq 'Intune' -and $Mode -eq 2) {
     foreach ($row in $endpointData) { $row.TestMode = 'Client' }
     Write-Host "  Note             : Intune endpoints apply to any managed Windows device, so the" -ForegroundColor DarkGray
-    Write-Host "                     same set is validated from a client device as from a Cloud PC." -ForegroundColor DarkGray
+    Write-Host "                     same set is validated from a client device as from a cloud host." -ForegroundColor DarkGray
 }
 
 # -- Step 2: Prompt for mode if not supplied -----------------------------------
