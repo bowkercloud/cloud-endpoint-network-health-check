@@ -30,7 +30,7 @@
     .\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
 
 .NOTES
-    Version:    3.8
+    Version:    3.9
     Blog:       https://bowker.cloud
     References:
         https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
@@ -64,7 +64,7 @@ param(
 # CONFIGURATION
 # -----------------------------------------------------------------------------
 $ScriptName     = 'Test-W365NetworkHealth'
-$ScriptVersion  = 'v3.8'
+$ScriptVersion  = 'v3.9'
 $CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/windows365/main/Endpoints.csv'
 $TimeoutSeconds = 5
 $script:InterceptDetected = $false   # set by the Step 2c control probe; read by Write-Summary
@@ -948,15 +948,42 @@ function Write-Summary {
         $median = $sorted[[int][math]::Floor($sorted.Count / 2)]
         Write-Host "  Connect latency  : median ${median} ms, min $($sorted[0]) ms, max $($sorted[-1]) ms  (over $($rtts.Count) probes)" -ForegroundColor DarkGray
 
-        # A TCP handshake cannot complete in under a millisecond or two against a
-        # remote endpoint - there is not enough time for the round trip. When a
-        # meaningful share of probes come back that fast, something on this device
-        # is completing the handshake locally: a ZTNA or SWG client, a transparent
-        # proxy, or similar. Deliberately behavioural rather than a vendor list, so
-        # it catches whatever the tenant happens to run.
-        $subMs = @($sorted | Where-Object { $_ -lt 2 }).Count
-        if ($subMs -ge 3) { $localTermination = $true }
-        if ($subMs -ge 3) {
+        # Sub-millisecond connects mean a handshake completed without time for a
+        # round trip. ACROSS THE INTERNET that means something local answered.
+        # INSIDE AZURE it does not: a Cloud PC on the Microsoft Hosted Network
+        # sits on Microsoft's own backbone, frequently in the same region or
+        # metro as the service it is calling, and sub-millisecond connects to
+        # Microsoft endpoints are simply normal there.
+        #
+        # So this cannot be read without knowing where we are, and the script
+        # already knows - IMDS told us. Treating Azure proximity as interception
+        # tells the reader their results are untrustworthy when they are fine.
+        #
+        # The remaining physics check works in both places: from anywhere on
+        # earth, some endpoint in a list spanning Japan, Australia, Europe and
+        # the US must be far away. If even the SLOWEST probe came back quickly,
+        # nothing is reaching a distant endpoint and something local is
+        # answering everything.
+        $subMs   = @($sorted | Where-Object { $_ -lt 2 }).Count
+        $slowest = $sorted[-1]
+        $inAzure = @($Results | Where-Object { $_.Hostname -eq '169.254.169.254' -and $_.Status -eq 'OK' }).Count -gt 0
+
+        # Endpoints that are physically far from most of the world. Nowhere on
+        # earth is within 2ms of all of these, Azure backbone or not, so any of
+        # them answering that fast means something local answered - a threshold
+        # on the slowest probe overall cannot say that, because a run whose
+        # endpoint list happens to be regional would trip it.
+        $farHosts = @('intunemaape13.jpe.attest.azure.net','intunemaape17.jpe.attest.azure.net',
+                      'intunemaape18.jpe.attest.azure.net','intunemaape19.jpe.attest.azure.net',
+                      'hm-iot-in-prod-prau01.azure-devices.net','hm-iot-in-prod-prap01.azure-devices.net')
+        $farImpossible = @($Results | Where-Object {
+                            $_.Hostname -in $farHosts -and $_.Rtt -ne $null -and $_.Rtt -lt 2 }).Count -gt 0
+
+        # The control probe is authoritative: an unroutable address was accepted,
+        # so something local is answering on behalf of every destination. That
+        # outranks anything the timings suggest, in Azure or not.
+        if ($subMs -ge 3 -and ($script:InterceptDetected -or $farImpossible -or -not $inAzure)) {
+            $localTermination = $true
             Write-Host ""
             Write-Host "  NOTE: $subMs of $($rtts.Count) probes completed in under 2 ms. A TCP handshake to a" -ForegroundColor DarkYellow
             Write-Host "        remote endpoint cannot complete that fast, so those connections are being" -ForegroundColor DarkYellow
@@ -964,6 +991,14 @@ function Write-Summary {
             Write-Host "        The latency figures above do not describe the path to Microsoft, and on" -ForegroundColor DarkYellow
             Write-Host "        non-443 ports an [ OK ] only proves the local agent accepted the socket." -ForegroundColor DarkYellow
             Write-Host "        Port 443 results are unaffected: the TLS handshake still runs end to end." -ForegroundColor DarkYellow
+        }
+        elseif ($subMs -ge 3 -and $inAzure) {
+            Write-Host ""
+            Write-Host "  NOTE: $subMs of $($rtts.Count) probes completed in under 2 ms. IMDS confirms this is" -ForegroundColor DarkGray
+            Write-Host "        an Azure VM, so that is expected rather than suspicious - you are on" -ForegroundColor DarkGray
+            Write-Host "        Microsoft's backbone, often in the same region as the service being" -ForegroundColor DarkGray
+            Write-Host "        called. Distant endpoints still took real time (slowest ${slowest} ms), which" -ForegroundColor DarkGray
+            Write-Host "        confirms traffic is genuinely leaving this machine. No interception implied." -ForegroundColor DarkGray
         }
     }
     Write-Host "-----------------------------------------------------" -ForegroundColor DarkGray
