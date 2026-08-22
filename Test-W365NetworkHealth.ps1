@@ -13,8 +13,9 @@
     powershell -ExecutionPolicy Bypass -Command "irm https://bowker.cloud/w365check | iex"
 
 .PARAMETER Mode
-    1 = Cloud PC / Host Network
-    2 = Client Device / Client Network
+    1 = Host / Cloud Network (Cloud PC, AVD session host, or Azure VNet VM)
+    2 = Physical Client Device (Intune-managed Windows device, or device connecting
+        to a Cloud PC or AVD session host using Windows App)
     3 = Both
 
 .PARAMETER EndpointsCSV
@@ -1688,20 +1689,26 @@ if ($Mode -notin 0, 1, 2, 3) {
 
 if ($Mode -eq 0) {
     Write-Host ""
-    Write-Host "  Which network do you want to test from?" -ForegroundColor Yellow
-    Write-Host "    [1]  Cloud PC / Host Network  (run ON the Cloud PC or Azure VNet VM)" -ForegroundColor White
-    Write-Host "    [2]  Client Device Network    (run on the physical device used to ACCESS the Cloud PC)" -ForegroundColor White
+    Write-Host "  Where are you running the test?" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "    [1]  Host / Cloud Network" -ForegroundColor White
+    Write-Host "         (Cloud PC, AVD session host, or Azure VNet VM)" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "    [2]  Physical Client Device" -ForegroundColor White
+    Write-Host "         (Intune-managed Windows device, or device connecting to a Cloud PC" -ForegroundColor DarkGray
+    Write-Host "          or AVD session host using Windows App)" -ForegroundColor DarkGray
+    Write-Host ""
     Write-Host "    [3]  Both" -ForegroundColor White
     Write-Host ""
-    $inputMode = Read-Host "  Enter choice [1]"
+    $inputMode = Read-Host "  Selection [1]"
     if ([string]::IsNullOrWhiteSpace($inputMode)) { $inputMode = '1' }
     $Mode = [int]$inputMode
     if ($Mode -notin 1, 2, 3) { $Mode = 1 }
 }
 
 $modeLabel = switch ($Mode) {
-    1 { 'Cloud PC / Host Network' }
-    2 { 'Client Device Network' }
+    1 { 'Host / Cloud Network' }
+    2 { 'Physical Client Device' }
     3 { 'Both' }
 }
 
@@ -2023,7 +2030,7 @@ $allResults = @()
 # -- Step 3: Run tests ---------------------------------------------------------
 if ($Mode -eq 1 -or $Mode -eq 3) {
     Write-Host ""
-    Write-Host "+- CLOUD PC / HOST NETWORK TESTS -------------------------+" -ForegroundColor Magenta
+    Write-Host "+- HOST / CLOUD NETWORK TESTS ----------------------------+" -ForegroundColor Magenta
     $allResults += Test-EndpointList -Endpoints $endpointData -FilterMode 'CloudPC'
     Write-Host ""
     Write-Host "+---------------------------------------------------------+" -ForegroundColor Magenta
@@ -2031,7 +2038,7 @@ if ($Mode -eq 1 -or $Mode -eq 3) {
 
 if ($Mode -eq 2 -or $Mode -eq 3) {
     Write-Host ""
-    Write-Host "+- CLIENT DEVICE NETWORK TESTS ---------------------------+" -ForegroundColor Blue
+    Write-Host "+- PHYSICAL CLIENT DEVICE TESTS --------------------------+" -ForegroundColor Blue
     $allResults += Test-EndpointList -Endpoints $endpointData -FilterMode 'Client'
     Write-Host ""
     Write-Host "+---------------------------------------------------------+" -ForegroundColor Blue
