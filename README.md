@@ -1,6 +1,8 @@
-# Windows 365 Network Health Check
+# Microsoft Cloud Endpoint Network Health Check
 
-A PowerShell script for testing the network connectivity required by Windows 365 and Azure Virtual Desktop, covering the Cloud PC or session host network, the end user device, Microsoft Intune and Windows Autopilot.
+**Microsoft Intune, Windows 365 & Azure Virtual Desktop**
+
+PowerShell network validation for Microsoft Intune, Windows 365 and Azure Virtual Desktop.
 
 Built and maintained by [Daniel Bowker](https://bowker.cloud) - Microsoft MVP for Windows 365.
 
@@ -12,62 +14,166 @@ Inspired by [Shannon Fritz's original gist](https://gist.github.com/shannonfritz
 
 ## Overview
 
-Network connectivity is one of the most common causes of Windows 365 provisioning failures and poor Cloud PC experiences.
+Network connectivity is behind a surprising number of endpoint problems. Failed device enrolment, Cloud PC provisioning failures, Win32 app deployment issues, Windows Update problems and poor remote session quality can all come back to something being blocked, intercepted or routed differently than expected.
 
-The challenge is that the network requirements sit across multiple Microsoft documentation pages covering Windows 365, Azure Virtual Desktop, Intune, Windows Autopilot and supporting Azure services.
+The problem is that Microsoft publishes the requirements for Intune, Windows 365 and Azure Virtual Desktop across several different documentation pages.
 
-This script brings those requirements together and tests them in one run.
+This script brings them together and tests them in one run.
 
-The latest version covers **442 endpoint entries** across:
+The current endpoint dataset contains **442 entries** across Microsoft Intune, Windows 365 and Azure Virtual Desktop in the commercial Microsoft cloud.
 
-| Category | Entries | Covers |
-|----------|---------|--------|
-| `Intune` | 254 | Core service, Win32 apps, WNS, Delivery Optimization, MAA attestation and published IP ranges |
-| `Intune-Autopilot` | 59 | Windows Update, NTP, TPM attestation and diagnostics |
-| `W365-CloudPC` | 28 | Windows 365 provisioning, IoT hubs and registration |
-| `AVD-SessionHost` | 24 | Required AVD session host endpoints and Azure fabric IPs |
-| `Intune-RemoteHelp` | 23 | Remote Help |
-| `Client-AVD` | 20 | End user device endpoints |
-| `Client-AVD-CertCA` | 11 | Azure Certificate Authority CRL/OCSP endpoints |
-| `AVD-SessionHost-Optional` | 10 | Optional AVD session host endpoints |
-| `Intune-Store` | 9 | Microsoft Store and app installation |
-| `Intune-RemoteHelp-GCC` | 4 | Remote Help endpoints for US Government tenants |
+## What's new in v4.0
 
-Conditional services such as Remote Help and Microsoft Store are kept in separate categories, making it easier to see which requirements apply to your environment.
+The script started life as a Windows 365 network checker, but it has grown quite a bit beyond that.
+
+The biggest change in v4.0 is that **Microsoft Intune is now a first-class workload**, alongside Windows 365 and Azure Virtual Desktop.
+
+You can now choose exactly what you want to validate:
+
+```text
+[1] All Cloud Endpoint requirements
+[2] Microsoft Intune
+[3] Windows 365
+[4] Azure Virtual Desktop
+```
+
+The test then asks where you are running it from.
+
+```text
+[1] Host / Cloud Network
+    (Cloud PC, AVD session host, or Azure VNet VM)
+
+[2] Physical Client Device
+    (Intune-managed Windows device, or device connecting to a Cloud PC or
+     AVD session host using Windows App)
+
+[3] Both
+```
+
+This keeps two different questions separate:
+
+```text
+Workload = WHAT you are validating
+Mode     = WHERE you are testing from
+```
+
+Windows 365 also includes the Intune, AVD and Azure platform dependencies it actually relies on. It is deliberately not just a test of the `W365-CloudPC` endpoints.
+
+Other changes across the recent overhaul include:
+
+- Real TLS handshakes with SNI, not just TCP 443
+- Likely SSL inspection detection
+- DNS failures reported separately from port failures
+- Wildcard endpoints actually tested where possible
+- Real UDP testing for RDP Shortpath
+- SNTP/NTP testing including clock skew
+- Azure IMDS and WireServer checks
+- IPv6 connectivity checks
+- Connection latency reporting
+- ZTNA/Secure Web Gateway interception checks
+- Port 80 validation where Microsoft require both 80 and 443
+- Parallel endpoint testing and host/port deduplication
+- Optional Intune IP range filtering
+- Improved `Get-Help` documentation and parameter examples
 
 ---
 
-## What It Tests
+## Workload and Mode
 
-This has moved quite a long way beyond a basic port checker.
+### Workloads
 
-The script now validates:
+| Workload | Validates |
+|----------|-----------|
+| `All` | Everything below. The default. |
+| `Intune` | Published Microsoft Intune network requirements for Windows devices |
+| `Windows365` | Windows 365 service endpoints plus the AVD, Intune and Azure platform dependencies it relies on |
+| `AVD` | Azure Virtual Desktop session host and client requirements |
 
-- TCP connectivity
-- TLS handshakes with SNI
-- Certificate chains and likely SSL inspection
-- DNS resolution failures separately from port failures
-- Wildcard endpoints
-- RDP Shortpath using a real STUN request over UDP 3478
-- NTP using SNTP, including clock skew
-- Azure IMDS and WireServer
-- IPv6 connectivity
-- Endpoint connection latency
-- Configured system proxies
-- Behaviour that may indicate local ZTNA/SWG interception
-- Required port 80 connectivity where Microsoft document both 80 and 443
-
-Tests run concurrently and duplicate host/port combinations are only tested once.
-
----
-
-## Modes
+### Modes
 
 | Mode | Description | Run from |
 |------|-------------|----------|
-| 1 | Cloud PC / Host Network | The Cloud PC or a VM in the same Azure VNet |
-| 2 | Client Device Network | The physical device used to connect to the Cloud PC |
-| 3 | Both | Runs all tests in sequence |
+| 1 | Host / Cloud Network | Cloud PC, AVD session host, or VM in the Azure network you want to validate |
+| 2 | Physical Client Device | Intune-managed Windows device, or the device connecting to a Cloud PC or AVD session host using Windows App |
+| 3 | Both | Runs both in sequence |
+
+### Examples
+
+```powershell
+.\Test-W365NetworkHealth.ps1 -Workload Intune -Mode 2
+.\Test-W365NetworkHealth.ps1 -Workload Windows365 -Mode 1
+.\Test-W365NetworkHealth.ps1 -Workload AVD -Mode 3
+.\Test-W365NetworkHealth.ps1 -Workload All -Mode 3
+```
+
+Commands written before workload selection existed still work unchanged. `-Workload` is optional and defaults to `All`.
+
+---
+
+## Microsoft Intune
+
+Intune is now a first-class workload rather than something that is only tested as part of Windows 365.
+
+`-Workload Intune` validates the published Microsoft Intune network requirements for Windows devices in the commercial Microsoft cloud, including:
+
+- Core Intune service connectivity
+- Intune Management Extension and Win32 apps
+- Windows Push Notification Services
+- Delivery Optimization and Windows Update dependencies
+- Windows Autopilot, including diagnostics upload
+- Microsoft Azure Attestation
+- Microsoft Store
+- Remote Help
+- Endpoint Privilege Management dependencies present in Microsoft's Intune endpoint list
+- PowerShell Gallery and OneGet
+- Published Intune IP ranges, including the Azure Front Door ranges used by Intune
+
+Remote Help and Microsoft Store remain in their own categories so it is obvious which results relate to optional features your environment may not use.
+
+Intune requirements are device requirements. That means the same Intune set can be tested from a Cloud PC or from a normal physical Intune-managed Windows device.
+
+**Scope:** this validates Microsoft's published Intune network requirements for Windows devices in the commercial cloud. It does not claim to test every endpoint for every Microsoft product that integrates with Intune. Products with their own network documentation, such as Microsoft Defender for Endpoint and Security Copilot, may have additional requirements.
+
+---
+
+## Windows 365
+
+Selecting `Windows365` does more than test the Windows 365 service endpoints.
+
+Microsoft's Windows 365 network requirements include four separate areas: the physical device, Microsoft Intune, the AVD session host virtual machine and the Windows 365 service.
+
+A Cloud PC is an AVD session host, managed by Intune and running on Azure infrastructure, so testing only the Windows 365 service FQDNs could give you an all-green result while a genuine Intune or AVD dependency is still blocked.
+
+The Windows 365 workload therefore includes:
+
+- Windows 365 service endpoints, including provisioning and IoT hub registration
+- Required and optional AVD session host requirements
+- Client-side AVD connectivity and certificate authority endpoints
+- Intune requirements needed to provision and manage a Cloud PC
+- Entra ID and authentication dependencies
+- Azure fabric endpoints including IMDS and WireServer
+- RDP connectivity and RDP Shortpath
+
+It excludes optional Intune features that a Cloud PC does not need to provision, manage or connect, such as Remote Help and Microsoft Store.
+
+---
+
+## Azure Virtual Desktop
+
+`-Workload AVD` covers:
+
+- Required AVD session host endpoints
+- Optional AVD session host endpoints
+- Client-side connectivity
+- Azure Certificate Authority endpoints
+- Azure fabric IPs
+- RDP Shortpath on both the host and client side
+
+Mode still applies:
+
+- `AVD -Mode 1` focuses on the host/session-host side
+- `AVD -Mode 2` focuses on the physical client device, including the client side of RDP Shortpath
+- `AVD -Mode 3` runs both
 
 ---
 
@@ -75,15 +181,15 @@ Tests run concurrently and duplicate host/port combinations are only tested once
 
 | Status | Meaning |
 |--------|---------|
-| `[ OK ]` | Connection succeeded. On port 443 this includes a TLS handshake where applicable |
-| `[FAIL]` | DNS resolved but the connection failed |
-| `[DNS!]` | The hostname could not be resolved |
+| `[ OK ]` | Connected. On port 443 this means a full TLS handshake with SNI where supported |
+| `[FAIL]` | DNS resolved, but the connection failed |
+| `[DNS!]` | The hostname did not resolve |
 | `[TLS!]` | TCP connected but the TLS handshake failed |
-| `[INSP]` | Certificate chain indicates likely SSL inspection |
-| `[ZONE]` | Wildcard has no stable hostname to test, so the parent DNS zone was validated |
-| `[INFO]` | Informational result such as an IP range, Azure-specific check or reference entry |
+| `[INSP]` | TLS completed but the certificate chain suggests likely SSL inspection |
+| `[ZONE]` | Wildcard has no stable public hostname, so the parent DNS zone was validated instead |
+| `[INFO]` | Published IP range, Azure-only check, reference entry or other informational result |
 
-Separating these results matters. A DNS problem, firewall block and SSL inspection issue can all break connectivity, but they need completely different fixes.
+A DNS problem, firewall block and SSL inspection issue can all break the service, but they need completely different fixes. Keeping them separate is much more useful than a single generic failure.
 
 ---
 
@@ -107,16 +213,7 @@ pwsh -ExecutionPolicy Bypass -Command "irm https://bowker.cloud/w365check | iex"
 powershell -ExecutionPolicy Bypass -Command "irm https://bowker.cloud/w365check | iex"
 ```
 
-**Run locally:**
-
-```powershell
-.\Test-W365NetworkHealth.ps1
-.\Test-W365NetworkHealth.ps1 -Mode 1
-.\Test-W365NetworkHealth.ps1 -Mode 2 -OutputPath C:\Temp\results.csv
-.\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
-```
-
-> **I'd recommend running it elevated.** Some Azure fabric checks behave differently from a non-elevated PowerShell session. Administrator is enough.
+> **Run it elevated.** Some Azure fabric checks behave differently from a non-elevated session and can otherwise appear unreachable when they are fine. Administrator is enough for the normal test.
 
 ---
 
@@ -124,130 +221,113 @@ powershell -ExecutionPolicy Bypass -Command "irm https://bowker.cloud/w365check 
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `-Mode` | 1 = Cloud PC, 2 = Client, 3 = Both. Prompted if not supplied | Prompt |
-| `-EndpointsCSV` | Use a local Endpoints.csv rather than downloading it | Auto |
-| `-OutputPath` | Export all results to CSV | None |
-| `-NoTlsCheck` | Skip TLS and certificate validation and use TCP only | Off |
-| `-SkipRegionPicker` | Skip Intune IP range region mapping | Off |
-| `-MaxParallel` | Number of concurrent probes | 12 |
+| `-Workload` | `All`, `Intune`, `Windows365`, `AVD`. Prompted if not supplied. | Prompt, then `All` |
+| `-Mode` | 1 = Host / Cloud Network, 2 = Physical Client Device, 3 = Both. | Prompt, then 1 |
+| `-EndpointsCSV` | Path to a local Endpoints.csv. Downloads from GitHub if not supplied. | Auto |
+| `-OutputPath` | Export results to CSV. | None |
+| `-NoTlsCheck` | Skip TLS handshake and certificate validation; TCP only. | Off |
+| `-NoIntuneIPFilter` | Never offer optional Intune IP range filtering. Alias: `-NoRegionFilter`. | Off |
+| `-SkipRegionPicker` | Original parameter name, retained for backwards compatibility. | Off |
+| `-MaxParallel` | Concurrent probes. | 12 |
 
 ---
 
-## Wildcard Endpoints
+## How It Works
 
-One of the biggest changes from the original script is that **wildcards are no longer simply skipped**.
+The script loads endpoints from `Endpoints.csv`, normally downloaded automatically from the repository. Each entry includes its category, port, protocol, mode, workload membership, notes and a direct Microsoft documentation reference.
 
-Where possible, the script uses a verified hostname within the wildcard to test connectivity.
+Probes run concurrently and identical host/port combinations are deduplicated, so a shared endpoint is tested once rather than repeatedly for every category.
 
-For example:
+### TLS, not just TCP
 
-```text
-*.wvd.microsoft.com
-```
+A successful TCP connection to port 443 does not always mean the service is usable.
 
-can be tested using a known live service within that namespace.
+A proxy, Secure Web Gateway or local security agent can accept the socket and then block the actual hostname when TLS starts.
 
-Where there isn't a reliable public hostname to use, the script checks the parent DNS zone instead. This doesn't prove that every destination inside the wildcard is reachable, but it does catch common DNS filtering problems and is much more useful than simply returning `[SKIP]`.
+Where appropriate, the script therefore performs a real TLS handshake with SNI and checks the certificate chain.
 
----
+This helps distinguish between a blocked port, DNS problem, TLS failure and likely SSL inspection.
 
-## TLS and SSL Inspection
+Some Windows Update and Delivery Optimization CDN endpoints are deliberately excluded from TLS validation because the certificates returned by the CDN do not reliably cover the Microsoft hostname. Those entries are TCP-tested instead rather than generating a false TLS failure.
 
-A successful TCP connection to port 443 doesn't necessarily mean the service is usable.
+### Wildcards are tested
 
-A proxy or security product can accept the TCP connection locally and then block the actual hostname further into the connection.
+Wildcard requirements are no longer automatically skipped.
 
-For endpoints where TLS validation is appropriate, the script performs a full TLS handshake with SNI and checks the certificate chain.
+Where a reliable hostname exists inside the wildcard, the script connects to a verified service within that namespace.
 
-This can identify:
+Where there is no stable public hostname, the parent DNS zone is checked instead.
 
-- TCP connectivity working but TLS failing
-- Certificate chains that indicate likely SSL inspection
-- Situations where a security agent or proxy is accepting traffic locally
+That does not prove every possible FQDN inside the wildcard is allowed through the firewall, but it catches common DNS filtering problems and is much more useful than simply returning `[SKIP]`.
 
-Some Windows Update and Delivery Optimization endpoints are deliberately excluded from TLS validation because of the way Microsoft content is delivered through third-party CDNs. These are TCP-tested instead.
+### UDP is genuinely tested
 
----
+RDP Shortpath sends a real STUN binding request over UDP 3478 on both the host and client side where Microsoft require it.
 
-## UDP Testing
+NTP sends a real SNTP request and reports stratum and clock skew. A badly skewed clock can cause Entra authentication issues that initially look unrelated to networking.
 
-UDP is no longer reported as something you need to check manually.
+### Port 80 matters
 
-### RDP Shortpath
+A number of Microsoft endpoint groups are documented as requiring both TCP 80 and 443.
 
-The script sends a real STUN binding request over UDP 3478.
+That is particularly important for Windows Update and Delivery Optimization. Testing only 443 can give you a healthy result while the actual content path on port 80 is blocked.
 
-This is tested from both the session host and client side where required by Microsoft.
+The endpoint dataset includes port 80 where Microsoft require it and the destination genuinely responds on that port.
 
-### NTP
+### Azure fabric checks
 
-The script sends a real SNTP request and reports the response, including clock skew.
+The script also understands Azure-specific services.
 
-Large time differences are worth knowing about because they can cause Entra authentication problems that don't immediately look network related.
+IMDS gets a real HTTP request using the required metadata header, while WireServer is checked on its documented ports.
 
----
+If IMDS responds, the script knows it is running inside Azure and can interpret the remaining results accordingly.
 
-## Azure Fabric Checks
+### ZTNA and Secure Web Gateways
 
-When running Mode 1, the script also checks Azure-specific services including:
+Modern ZTNA and Secure Web Gateway clients do not always configure a traditional Windows proxy.
 
-- Azure Instance Metadata Service (IMDS)
-- WireServer on the documented ports
+The script performs behavioural checks that can help identify when traffic appears to be accepted locally rather than reaching the intended destination.
 
-IMDS is used to confirm whether the machine is actually running inside Azure, allowing the script to give more useful guidance for the remaining Azure checks.
+This is deliberately vendor-neutral.
+
+It also understands that very low latency to Microsoft endpoints can be completely normal from a Cloud PC or Azure VM already sitting on Microsoft's backbone, so fast connectivity by itself is not treated as proof of interception.
 
 ---
 
-## Intune IP Range Region Picker
+## Optional Intune IP Range Filtering
 
-Modes 1 and 3 can optionally map Microsoft's published Intune IP ranges against the Azure regions where those ranges are located.
+Microsoft publishes Intune service IP ranges across a subset of Azure regions.
 
-This is important:
+If useful, the script can filter the CIDR guidance shown at the end of the test.
 
-**The region picker does not test connectivity.**
+This is **optional** and does not change any of the connectivity tests.
 
-It simply reduces the IP-range guidance shown at the end of the run so you're not presented with ranges that aren't relevant to the Azure region you're testing from.
+By default, the script shows all applicable Intune ranges.
 
-Use:
+If you choose regional filtering, your own Azure region may not appear in Microsoft's published mapping. A UK customer, for example, will not find UK South in that list. That is expected and does not mean anything is missing from the test.
 
-```powershell
--SkipRegionPicker
-```
-
-if you don't need it.
+If the Microsoft service-tag data cannot be downloaded or mapped, the script simply shows all applicable ranges and carries on. It is not treated as a health failure.
 
 ---
 
 ## Published IP Ranges
 
-Published CIDR ranges are deliberately not tested one IP at a time.
+Published CIDR ranges are deliberately not probed one address at a time.
 
-Choosing a random address inside a Microsoft global range and checking whether it responds doesn't prove whether the firewall rule is correct and can easily create false failures.
+Picking a random IP from a global Microsoft range and seeing whether it responds does not prove whether your firewall configuration is correct, and can easily create false failures.
 
-Instead, the ranges are grouped in the results and should be validated against your firewall or NSG rules.
+The ranges are therefore grouped as firewall/NSG guidance rather than presented as hundreds of individual probes.
 
-The full list is still included when exporting results to CSV.
-
----
-
-## Endpoint CSV
-
-`Endpoints.csv` remains the source of truth for the endpoint list.
-
-Each entry includes the endpoint, port, protocol, mode, notes and the relevant Microsoft documentation reference.
-
-This means Microsoft network requirement changes can normally be handled by updating the CSV rather than changing the PowerShell code.
-
-The CSV also keeps track of a small number of endpoints that Microsoft still publish but which are no longer live, without turning them into misleading failures on every run.
+The full detail is still available in the CSV export.
 
 ---
 
 ## CSV Export
 
-Use `-OutputPath` if you want a complete record of the test:
+Use `-OutputPath` if you want to retain the complete result set:
 
 ```powershell
-.\Test-W365NetworkHealth.ps1 -Mode 1 -OutputPath C:\Temp\W365NetworkHealth.csv
+.\Test-W365NetworkHealth.ps1 -Workload Intune -Mode 2 -OutputPath C:\Temp\CloudEndpointNetworkHealth.csv
 ```
 
 The export includes:
@@ -263,93 +343,71 @@ Detail
 Rtt
 Issuer
 Notes
+KnownDead
+Workloads
+SelectedWorkload
 Timestamp
 ```
 
-This is useful for troubleshooting, attaching results to tickets or comparing runs from different network locations.
+Useful for attaching evidence to a ticket, comparing tests from different networks or keeping a record of exactly what was checked.
+
+---
+
+## Files
+
+| File | Description |
+|------|-------------|
+| `Test-W365NetworkHealth.ps1` | Main PowerShell script. The filename predates Intune and AVD becoming first-class workloads and is retained so existing links, commands and automation keep working. |
+| `Endpoints.csv` | All 442 endpoint entries with category, port, protocol, mode, workload membership, notes and Microsoft documentation reference |
+
+`Endpoints.csv` remains the source of truth. Workload membership lives in the `Workloads` column, so shared dependencies can belong to more than one workload without duplicating rows.
 
 ---
 
 ## Scope
 
-The endpoint list has been audited against Microsoft's published requirements for the **commercial Azure cloud**.
+The project currently targets the **commercial Microsoft cloud**.
 
-Coverage includes:
+Coverage has been audited against Microsoft's published lists for:
 
-| Source | Coverage |
+| Source | Covered |
 |---|---:|
-| Windows 365 service | 16/16 |
-| AVD session host required | 23/23 |
-| AVD session host optional | 9/9 |
+| Windows 365 service (Enterprise) | 16/16 |
+| AVD session hosts - required | 23/23 |
+| AVD session hosts - optional | 9/9 |
 | AVD end user devices | 18/18 |
 | Intune Consolidated Endpoint List | 59/59 |
 | Intune MAA attestation | 16/16 |
-| Autopilot diagnostics | 34/34 |
+| Autopilot diagnostics upload | 34/34 |
 
-### Government clouds
-
-Windows 365 Government and the Azure Government-specific AVD and Intune endpoint sets are currently outside the scope of the script.
-
-If you're using GCC or GCC High, check the relevant Microsoft Government cloud documentation rather than relying on these results alone.
+**Government clouds are not currently covered.** If you use Windows 365 Government, GCC/GCC High or Azure Government-specific AVD/Intune endpoint sets, use the relevant Microsoft Government documentation rather than relying on this test alone.
 
 ---
 
-## Microsoft Sources
+## Endpoint Sources
 
-All endpoint requirements come directly from Microsoft documentation:
+All requirements are sourced from Microsoft documentation:
 
+- [Network endpoints for Microsoft Intune](https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints)
 - [Network requirements for Windows 365](https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network)
 - [Required FQDNs and endpoints for AVD - Session Hosts](https://learn.microsoft.com/en-us/azure/virtual-desktop/required-fqdn-endpoint?tabs=azure#session-host-virtual-machines)
 - [Required FQDNs and endpoints for AVD - End User Devices](https://learn.microsoft.com/en-us/azure/virtual-desktop/required-fqdn-endpoint?tabs=azure#end-user-devices)
-- [Network endpoints for Microsoft Intune](https://learn.microsoft.com/en-us/intune/intune-service/fundamentals/intune-endpoints)
 - [Azure Certificate Authority details](https://learn.microsoft.com/en-us/azure/security/fundamentals/azure-certificate-authority-details)
-- [Azure communication IPs](https://learn.microsoft.com/en-us/azure/virtual-desktop/azurecommunicationips)
+- [Azure communication IPs (WireServer / IMDS)](https://learn.microsoft.com/en-us/azure/virtual-desktop/azurecommunicationips)
 
 ### A note on Intune
 
-Microsoft specifically warns that the Office 365 Endpoint API (`endpoints.office.com`) no longer provides an accurate endpoint list for Intune.
+Microsoft warns that the Office 365 Endpoint API (`endpoints.office.com`) no longer provides an accurate endpoint list for Intune.
 
-For that reason, this script uses Microsoft's published Intune Consolidated Endpoint List rather than trying to dynamically pull the information from the deprecated API.
+The script therefore uses the static Consolidated Endpoint List from Microsoft's Intune documentation instead of relying on that API.
 
----
+### Reference-only and known-dead entries
 
-## Limitations and Caveats
+A small number of endpoints still appear in Microsoft's documentation but are not currently live.
 
-There are a few things worth understanding before acting on a result.
+Rather than silently deleting them, the CSV can mark them as reference-only or known-dead so the source data stays faithful to what Microsoft publish without generating the same misleading failure on every run.
 
-### Proxies
-
-The socket tests do not traverse WinHTTP or WinInet proxy settings.
-
-If your environment relies on a traditional proxy, the script reports the direct network path. It will tell you when a proxy is configured, but it cannot guarantee that traffic travelling through that proxy will behave the same way.
-
-### ZTNA and Secure Web Gateway clients
-
-Products such as ZTNA and Secure Web Gateway agents can intercept traffic without configuring a traditional Windows proxy.
-
-The script performs additional behavioural checks to help identify this, but these should still be treated as diagnostic indicators rather than proof of a specific vendor or product.
-
-### User vs SYSTEM context
-
-Windows Autopilot, Windows Update and TPM attestation can operate as SYSTEM.
-
-A successful user-context test doesn't necessarily guarantee that SYSTEM has the same network access.
-
-For deeper troubleshooting you can run PowerShell as SYSTEM and repeat the test.
-
-### VPN and split tunnelling
-
-The script tests whichever network path is active when you run it.
-
-If Microsoft traffic is split-tunnelled away from your corporate VPN, the result represents that direct path rather than the VPN egress route.
-
-### Run it from the right place
-
-Mode 1 should be run from the Cloud PC or a VM on the same Azure network.
-
-Mode 2 should be run from the physical endpoint and network the user will actually use.
-
-That sounds obvious, but it makes a big difference to what the results tell you.
+If Microsoft bring one of the known-dead endpoints back, it will show up automatically.
 
 ---
 
@@ -360,22 +418,37 @@ That sounds obvious, but it makes a big difference to what the results tell you.
 - Outbound internet access
 - No additional PowerShell modules or dependencies
 
+> **If you edit the script:** keep it **ASCII-only with no BOM**. This preserves both `irm | iex` and local Windows PowerShell 5.1 compatibility.
+
 ---
 
-## Files
+## Limitations and Caveats
 
-| File | Description |
-|------|-------------|
-| `Test-W365NetworkHealth.ps1` | Main PowerShell script |
-| `Endpoints.csv` | Microsoft endpoint and network requirement data |
+**Proxy servers are not traversed.** TCP and TLS sockets bypass WinHTTP and WinInet proxy settings. The script reports when a proxy is configured, but the results describe the direct socket path.
+
+**VPN split tunnelling affects results.** The test follows whatever network path is active when you run it.
+
+**User context vs SYSTEM context.** Autopilot OOBE, Windows Update and TPM attestation can run as SYSTEM. A successful user-context test does not guarantee SYSTEM has the same path.
+
+To test from SYSTEM:
+
+```powershell
+psexec.exe -accepteula -i -s powershell.exe
+```
+
+**Some wildcards are confirmed at DNS-zone level only.** Where there is no stable hostname to test, DNS can be validated but the individual port cannot be proven open.
+
+**Some endpoints deliberately skip TLS validation.** Certain Windows Update and Delivery Optimization hostnames are delivered through third-party CDNs where certificate validation against the documented hostname is not meaningful. Those entries are TCP-tested only.
+
+**Run it from the right place.** Mode 1 is for the Cloud PC, AVD session host or Azure VM/network you want to validate. Mode 2 is for the physical client device, either a normal Intune-managed Windows endpoint or the device used to connect through Windows App.
 
 ---
 
 ## Contributing
 
-Microsoft change these requirements regularly.
+Microsoft regularly change their endpoint requirements.
 
-If you spot something missing or Microsoft update one of the endpoint lists, raise an issue or submit a PR against `Endpoints.csv`.
+If something needs adding or Microsoft update one of the published lists, raise an issue or submit a PR against `Endpoints.csv`.
 
 ---
 
