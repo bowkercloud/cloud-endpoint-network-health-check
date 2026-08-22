@@ -30,7 +30,7 @@
     .\Test-W365NetworkHealth.ps1 -Mode 3 -EndpointsCSV .\Endpoints.csv
 
 .NOTES
-    Version:    3.9
+    Version:    4.0
     Blog:       https://bowker.cloud
     References:
         https://learn.microsoft.com/en-us/windows-365/enterprise/requirements-network
@@ -48,11 +48,29 @@
 
 [CmdletBinding()]
 param(
+    # Workload = WHAT is being validated. Mode = WHERE it is validated from.
+    # Deliberately separate: they answer different questions and merging them
+    # would produce a twelve-item menu.
+    # The empty string is in the set on purpose. Invoke-Expression applies param
+    # attributes to variables in the CALLING scope, so a ValidateSet that does not
+    # admit the default value throws "the attribute cannot be added because
+    # variable Workload with value would no longer be valid" - which breaks
+    # irm | iex, the way most people run this. Empty simply means "not supplied,
+    # ask me", and anything outside the set is still rejected.
+    [ValidateSet('','All','Intune','Windows365','AVD')]
+    [string]$Workload = '',
+
     [int]$Mode = 0,
     [string]$EndpointsCSV = '',
     [string]$OutputPath = '',
     [switch]$NoTlsCheck,
+
+    # -SkipRegionPicker is the original name and must keep working. -NoRegionFilter
+    # describes what it does now that the feature is opt-in guidance filtering
+    # rather than a picker you had to walk through.
     [switch]$SkipRegionPicker,
+    [Alias('NoRegionFilter')]
+    [switch]$NoIntuneIPFilter,
     # 12 rather than something higher: beyond about a dozen, wall-clock barely
     # improves (the slowest individual probes dominate, not the queue) while
     # CDN-hosted Microsoft endpoints start rate-limiting concurrent TLS
@@ -64,7 +82,7 @@ param(
 # CONFIGURATION
 # -----------------------------------------------------------------------------
 $ScriptName     = 'Test-W365NetworkHealth'
-$ScriptVersion  = 'v3.9'
+$ScriptVersion  = 'v4.0'
 $CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/windows365/main/Endpoints.csv'
 $TimeoutSeconds = 5
 $script:InterceptDetected = $false   # set by the Step 2c control probe; read by Write-Summary
@@ -555,6 +573,7 @@ function Test-EndpointList {
                 WildcardNote = $ep.WildcardNote
                 KnownDead    = ($ep.WildcardNote -match '^\s*KnownDead')
                 NoTls        = ($ep.WildcardNote -match '^\s*NoTls')
+                Workloads    = $(if ($ep.PSObject.Properties.Name -contains 'Workloads') { $ep.Workloads } else { '' })
                 Kind         = $kind
                 Key          = $null
                 ProbeTarget  = $null
@@ -677,6 +696,8 @@ function Test-EndpointList {
                 Issuer      = ''
                 Notes       = $item.Notes
                 KnownDead   = $item.KnownDead
+                Workloads        = $item.Workloads
+                SelectedWorkload = $script:SelectedWorkload
                 Timestamp   = $stamp
             }
 
@@ -887,6 +908,9 @@ function Write-Summary {
     Write-Host ""
     Write-Host "-----------------------------------------------------" -ForegroundColor DarkGray
     Write-Host "  RESULTS SUMMARY" -ForegroundColor White
+    if ($script:SelectedWorkloadLabel) {
+        Write-Host "  Workload validated: $($script:SelectedWorkloadLabel)" -ForegroundColor White
+    }
     Write-Host "-----------------------------------------------------" -ForegroundColor DarkGray
     Write-Host "  Total entries    : $total"
     Write-Host "  OK               : $ok" -ForegroundColor Green
@@ -1149,7 +1173,20 @@ function Write-Summary {
     if ($rangeItems.Count -gt 0) {
         Write-Host ""
         Write-Host "  PUBLISHED IP RANGES (allow at the firewall - not individually testable):" -ForegroundColor DarkCyan
-        $byCat = $rangeItems | Group-Object Category, Subcategory
+
+        # Optional regional filtering applies HERE and only here - to the guidance
+        # printed, never to the rows tested. Front Door and IPv6 ranges are always
+        # shown: they are global, so a regional choice says nothing about them.
+        $shownRanges = $rangeItems
+        if ($script:IntuneRangeFilter) {
+            $keep = $script:IntuneRangeFilter
+            $shownRanges = @($rangeItems | Where-Object {
+                $_.Subcategory -ne 'IP Ranges' -or $_.Hostname -in $keep })
+            Write-Host ("    Filtered to region '{0}': showing {1} of {2} ranges. Guidance only - every" -f $script:IntuneRegionName, $shownRanges.Count, $rangeItems.Count) -ForegroundColor DarkGray
+            Write-Host "    range above was still counted and no test was skipped." -ForegroundColor DarkGray
+        }
+
+        $byCat = $shownRanges | Group-Object Category, Subcategory
         foreach ($g in $byCat) {
             $v6 = @($g.Group | Where-Object { $_.Hostname -match ':' }).Count
             $v4 = $g.Count - $v6
@@ -1545,6 +1582,104 @@ Write-Host ""
 Write-Host "  NOTE: Intune endpoints use a static hardcoded list per Microsoft guidance." -ForegroundColor DarkGray
 Write-Host "        The endpoints.office.com API is deprecated for Intune and returns inaccurate data." -ForegroundColor DarkGray
 
+# -- Step 1b: Prompt for workload if not supplied -------------------------------
+# Asked before Mode because it is the broader question: what are you validating,
+# then where from. Enter defaults to All, so the download-and-run path needs no
+# new parameters and behaves exactly as it always has.
+if ([string]::IsNullOrWhiteSpace($Workload)) {
+    Write-Host ""
+    Write-Host "  What would you like to validate?" -ForegroundColor Yellow
+    Write-Host "    [1]  All Cloud Endpoint requirements" -ForegroundColor White
+    Write-Host "    [2]  Microsoft Intune" -ForegroundColor White
+    Write-Host "    [3]  Windows 365" -ForegroundColor White
+    Write-Host "    [4]  Azure Virtual Desktop" -ForegroundColor White
+    Write-Host ""
+    $inputWorkload = Read-Host "  Selection [1]"
+    if ([string]::IsNullOrWhiteSpace($inputWorkload)) { $inputWorkload = '1' }
+    $Workload = switch ($inputWorkload.Trim()) {
+        '2'     { 'Intune' }
+        '3'     { 'Windows365' }
+        '4'     { 'AVD' }
+        default { 'All' }
+    }
+}
+
+$workloadLabel = switch ($Workload) {
+    'Intune'     { 'Microsoft Intune' }
+    'Windows365' { 'Windows 365' }
+    'AVD'        { 'Azure Virtual Desktop' }
+    default      { 'All Cloud Endpoint Requirements' }
+}
+$script:SelectedWorkload      = $Workload
+$script:SelectedWorkloadLabel = $workloadLabel
+
+# -- Step 1c: Filter the endpoint list to the selected workload -----------------
+# Driven by the CSV's Workloads column so that adding an endpoint never needs a
+# code change. The category map below is only a fallback for a CSV that predates
+# that column - the script downloads Endpoints.csv from the repo at runtime, so
+# a newer script WILL meet an older CSV during any rollout. Falling back keeps
+# that combination correct instead of filtering everything away.
+$WorkloadCategoryFallback = @{
+    'Intune'                   = @('Intune','Windows365')
+    'Intune-Autopilot'         = @('Intune','Windows365')
+    'Intune-RemoteHelp'        = @('Intune')
+    'Intune-RemoteHelp-GCC'    = @('Intune')
+    'Intune-Store'             = @('Intune')
+    'AVD-SessionHost'          = @('AVD','Windows365')
+    'AVD-SessionHost-Optional' = @('AVD','Windows365')
+    'Client-AVD'               = @('AVD','Windows365')
+    'Client-AVD-CertCA'        = @('AVD','Windows365')
+    'W365-CloudPC'             = @('Windows365')
+}
+
+function Get-RowWorkloads {
+    param($Row)
+    $w = $null
+    if ($Row.PSObject.Properties.Name -contains 'Workloads') { $w = $Row.Workloads }
+    if (-not [string]::IsNullOrWhiteSpace($w)) {
+        return @($w -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
+    $cat = $Row.Category.Trim()
+    if ($WorkloadCategoryFallback.ContainsKey($cat)) { return $WorkloadCategoryFallback[$cat] }
+    # Unknown category: include it rather than silently dropping a requirement.
+    return @('Intune','Windows365','AVD')
+}
+
+$endpointDataAll  = @($endpointData)
+$endpointTotalAll = $endpointDataAll.Count
+if ($Workload -ne 'All') {
+    $filtered = @($endpointData | Where-Object { (Get-RowWorkloads $_) -contains $Workload })
+    if ($filtered.Count -eq 0) {
+        # Should be unreachable, but never leave the user with an empty run.
+        Write-Host ""
+        Write-Host "  [WARN] No endpoints matched workload '$Workload'. Using the full list instead." -ForegroundColor Yellow
+        $Workload      = 'All'
+        $workloadLabel = 'All Cloud Endpoint Requirements'
+    } else {
+        $endpointData = $filtered
+        Write-Host ""
+        Write-Host "  Workload filter  : $workloadLabel - $($filtered.Count) of $endpointTotalAll entries apply" -ForegroundColor DarkGray
+    }
+}
+
+# Intune requirements are device requirements, not location requirements.
+#
+# Every Intune row carries TestMode=CloudPC, which is an artifact of this having
+# started as a Windows 365 host-network tool. Microsoft document those endpoints
+# for MANAGED WINDOWS DEVICES - a physical laptop needs the same Intune service,
+# Win32 app, WNS and Delivery Optimization connectivity that a Cloud PC does.
+# Left alone, "-Workload Intune -Mode 2" would test nothing at all.
+#
+# So for the Intune workload the rows are re-tagged in memory to whichever pass
+# is actually running. They are still tested exactly once - Mode 3 keeps them on
+# the CloudPC pass rather than testing them twice. Nothing on disk changes, and
+# no other workload is affected.
+if ($Workload -eq 'Intune' -and $Mode -eq 2) {
+    foreach ($row in $endpointData) { $row.TestMode = 'Client' }
+    Write-Host "  Note             : Intune endpoints apply to any managed Windows device, so the" -ForegroundColor DarkGray
+    Write-Host "                     same set is validated from a client device as from a Cloud PC." -ForegroundColor DarkGray
+}
+
 # -- Step 2: Prompt for mode if not supplied -----------------------------------
 if ($Mode -notin 0, 1, 2, 3) {
     Write-Host "  Invalid mode '$Mode'. Please choose 1, 2, or 3." -ForegroundColor Red
@@ -1636,98 +1771,138 @@ function Build-PrefixTable {
     return $table
 }
 
-if (($Mode -eq 1 -or $Mode -eq 3) -and -not $SkipRegionPicker) {
+# Optional Intune IP range filtering.
+#
+# Three deliberate changes from the old region picker:
+#
+#  1. Opt-in. It used to walk everyone through a region list on every Mode 1/3
+#     run. Microsoft only publish Intune service IPs for a subset of Azure
+#     regions, so a UK customer looks for UK South, does not find it, and
+#     reasonably concludes the tool is broken. Showing everything by default
+#     avoids putting that question in front of people who never needed it.
+#  2. It only affects DISPLAY. The old code removed IP range rows from
+#     $endpointData, which changed the entry totals. Filtering now records a
+#     list that the summary consults when printing firewall guidance, so the
+#     connectivity test set - and every count derived from it - is identical
+#     whether filtering is on or off.
+#  3. Nothing is downloaded unless the user opts in. The service tag JSON is
+#     4.5 MB and was previously fetched on every single run.
+#
+# Only offered when the selected workload actually contains Intune IP ranges,
+# so an AVD-only run is never asked about them.
+$script:IntuneRangeFilter = $null
+$script:IntuneRegionName  = $null
+$selectedRegion = $null
+
+$hasIntuneRanges = @($endpointData | Where-Object { $_.Subcategory -like 'IP Ranges*' }).Count -gt 0
+$skipFilter      = $SkipRegionPicker -or $NoIntuneIPFilter
+
+if (($Mode -eq 1 -or $Mode -eq 3) -and $hasIntuneRanges -and -not $skipFilter) {
     Write-Host ""
-    Write-Host "  [region-picker] Mapping published Intune IP ranges to Azure regions..." -ForegroundColor DarkGray
-    Write-Host "  [region-picker] This only narrows the IP-range guidance shown at the end." -ForegroundColor DarkGray
-    Write-Host "  [region-picker] No connectivity is tested here - use -SkipRegionPicker to skip." -ForegroundColor DarkGray
+    Write-Host "  Optional: Filter Intune IP range guidance by Azure region?" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Microsoft publishes Intune service IP ranges across a subset of Azure regions" -ForegroundColor DarkGray
+    Write-Host "  only, so your own Azure region may not appear in the list." -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  This does not change or limit any connectivity tests. It only reduces the" -ForegroundColor DarkGray
+    Write-Host "  Intune CIDR ranges shown in the final firewall guidance." -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "    [1]  Show all published Intune IP ranges (recommended)" -ForegroundColor White
+    Write-Host "    [2]  Filter Intune IP guidance by Azure region" -ForegroundColor White
+    Write-Host ""
+    $inputFilter = Read-Host "  Selection [1]"
+    if ([string]::IsNullOrWhiteSpace($inputFilter)) { $inputFilter = '1' }
 
-    $ipRangeEndpoints = @($endpointData | Where-Object { $_.Subcategory -eq 'IP Ranges' } | Select-Object -ExpandProperty Endpoint -Unique)
-    Write-Host "  [region-picker] $($ipRangeEndpoints.Count) unique IPv4 ranges to map" -ForegroundColor DarkGray
+    if ($inputFilter.Trim() -eq '2') {
+        Write-Host ""
+        Write-Host "  Mapping published Intune IP ranges to Azure regions..." -ForegroundColor DarkGray
 
-    $regionMap   = @{}
-    $downloadLink = $null
+        $ipRangeEndpoints = @($endpointData | Where-Object { $_.Subcategory -eq 'IP Ranges' } | Select-Object -ExpandProperty Endpoint -Unique)
+        $regionMap    = @{}
+        $downloadLink = $null
 
-    try {
-        $page  = Invoke-WebRequest -Uri 'https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519' -UseBasicParsing -TimeoutSec 15
-        $match = [regex]::Match($page.Content, 'ServiceTags_Public_[0-9]+')
-        if ($match.Success) {
-            $downloadLink = 'https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/' + $match.Value + '.json'
-        }
-    } catch {
-        Write-Host "  [region-picker] Could not reach Microsoft download page: $($_.Exception.Message)" -ForegroundColor DarkYellow
-    }
-
-    if ($downloadLink) {
         try {
-            $tagData = Invoke-RestMethod -Uri $downloadLink -TimeoutSec 30
-            $azureCloudRegions = $tagData.values | Where-Object { $_.name -like 'AzureCloud.*' }
-            Write-Host "  [region-picker] Loaded $(@($azureCloudRegions).Count) AzureCloud regional tags" -ForegroundColor DarkGray
-
-            $prefixTable = Build-PrefixTable -AzureCloudTags $azureCloudRegions
-            Write-Host "  [region-picker] Indexed $($prefixTable.Count) IPv4 prefixes" -ForegroundColor DarkGray
-
-            foreach ($ipRange in $ipRangeEndpoints) {
-                $r = Get-CidrRange $ipRange
-                if (-not $r) { continue }
-                $foundRegion = $null
-                foreach ($row in $prefixTable) {
-                    if ($r.Start -ge $row.Start -and $r.End -le $row.End) { $foundRegion = $row.Region; break }
-                }
-                if ($foundRegion) {
-                    if (-not $regionMap.ContainsKey($foundRegion)) { $regionMap[$foundRegion] = @() }
-                    $regionMap[$foundRegion] += $ipRange
-                }
+            $page  = Invoke-WebRequest -Uri 'https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519' -UseBasicParsing -TimeoutSec 15
+            $match = [regex]::Match($page.Content, 'ServiceTags_Public_[0-9]+')
+            if ($match.Success) {
+                $downloadLink = 'https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/' + $match.Value + '.json'
             }
-            Write-Host "  [region-picker] Mapped $(($regionMap.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum) of $($ipRangeEndpoints.Count) ranges across $($regionMap.Keys.Count) regions" -ForegroundColor DarkGray
         } catch {
-            Write-Host "  [region-picker] Failed to download or process service tags JSON: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            Write-Host "  Could not reach the Microsoft download page: $($_.Exception.Message)" -ForegroundColor DarkGray
         }
-    }
 
-    if ($regionMap.Keys.Count -gt 0) {
-        Write-Host ""
-        Write-Host "  Select your Azure region to narrow the Intune IP range guidance:" -ForegroundColor Yellow
-        Write-Host "    [0]  Skip region filtering - show full list" -ForegroundColor White
-        $sortedRegions = $regionMap.Keys | Sort-Object
-        $i = 1
-        foreach ($region in $sortedRegions) {
-            Write-Host ("    [{0}]  {1}  ({2} ranges)" -f $i, $region, $regionMap[$region].Count) -ForegroundColor White
-            $i++
+        if ($downloadLink) {
+            try {
+                $tagData = Invoke-RestMethod -Uri $downloadLink -TimeoutSec 60
+                $azureCloudRegions = @($tagData.values | Where-Object { $_.name -like 'AzureCloud.*' })
+                $prefixTable = Build-PrefixTable -AzureCloudTags $azureCloudRegions
+
+                foreach ($ipRange in $ipRangeEndpoints) {
+                    $r = Get-CidrRange $ipRange
+                    if (-not $r) { continue }
+                    foreach ($row in $prefixTable) {
+                        if ($r.Start -ge $row.Start -and $r.End -le $row.End) {
+                            if (-not $regionMap.ContainsKey($row.Region)) { $regionMap[$row.Region] = @() }
+                            $regionMap[$row.Region] += $ipRange
+                            break
+                        }
+                    }
+                }
+            } catch {
+                Write-Host "  Could not process the Azure service tag data: $($_.Exception.Message)" -ForegroundColor DarkGray
+            }
         }
-        Write-Host ""
-        Write-Host "  Note: mapped by cross-referencing against AzureCloud regional tags," -ForegroundColor DarkGray
-        Write-Host "        since Intune itself has no dedicated regional service tag." -ForegroundColor DarkGray
-        Write-Host "        Front Door and IPv6 ranges are always shown regardless of choice." -ForegroundColor DarkGray
-        Write-Host "        Only $($regionMap.Keys.Count) regions are listed because Microsoft publish Intune service" -ForegroundColor DarkGray
-        Write-Host "        IPs in those regions only - the other Azure regions have none. Region" -ForegroundColor DarkGray
-        Write-Host "        names are Microsoft's own service-tag spellings (e.g. 'switzerlandn')." -ForegroundColor DarkGray
-        Write-Host ""
-        $inputRegion = Read-Host "  Enter choice [0]"
-        if ([string]::IsNullOrWhiteSpace($inputRegion)) { $inputRegion = '0' }
 
-        $regionIndex = 0
-        [void][int]::TryParse($inputRegion, [ref]$regionIndex)
+        if ($regionMap.Keys.Count -gt 0) {
+            Write-Host ""
+            Write-Host "  Before you choose:" -ForegroundColor Yellow
+            Write-Host "    Microsoft only publish Intune service IPs in a subset of Azure regions," -ForegroundColor DarkGray
+            Write-Host "    so your own Azure region may well not be listed below. That is expected" -ForegroundColor DarkGray
+            Write-Host "    and does not mean anything is missing from the connectivity test." -ForegroundColor DarkGray
+            Write-Host "    The region names are Microsoft's own service-tag spellings, which is why" -ForegroundColor DarkGray
+            Write-Host "    some are abbreviated (for example 'switzerlandn')." -ForegroundColor DarkGray
+            Write-Host "    This selection only filters the CIDR guidance printed at the end." -ForegroundColor DarkGray
+            Write-Host ""
+            Write-Host "  Azure regions with published Intune IP ranges:" -ForegroundColor Yellow
+            Write-Host "    [0]  Show all published ranges" -ForegroundColor White
+            $sortedRegions = $regionMap.Keys | Sort-Object
+            $i = 1
+            foreach ($region in $sortedRegions) {
+                Write-Host ("    [{0}]  {1}  ({2} ranges)" -f $i, $region, $regionMap[$region].Count) -ForegroundColor White
+                $i++
+            }
+            Write-Host ""
+            Write-Host "  Front Door and IPv6 ranges are always shown regardless of choice." -ForegroundColor DarkGray
+            Write-Host ""
+            $inputRegion = Read-Host "  Enter choice [0]"
+            if ([string]::IsNullOrWhiteSpace($inputRegion)) { $inputRegion = '0' }
 
-        if ($regionIndex -gt 0 -and $regionIndex -le $sortedRegions.Count) {
-            $selectedRegion = $sortedRegions[$regionIndex - 1]
-            $keepRanges = $regionMap[$selectedRegion]
-            Write-Host "  Region: $selectedRegion  ($($keepRanges.Count) ranges)" -ForegroundColor Blue
-            $endpointData = $endpointData | Where-Object {
-                $_.Subcategory -ne 'IP Ranges' -or $_.Endpoint -in $keepRanges
+            $regionIndex = 0
+            [void][int]::TryParse($inputRegion, [ref]$regionIndex)
+
+            if ($regionIndex -gt 0 -and $regionIndex -le $sortedRegions.Count) {
+                $selectedRegion = $sortedRegions[$regionIndex - 1]
+                # Display filter only - $endpointData is deliberately untouched.
+                $script:IntuneRangeFilter = @($regionMap[$selectedRegion])
+                $script:IntuneRegionName  = $selectedRegion
+                Write-Host "  Region: $selectedRegion  ($($script:IntuneRangeFilter.Count) ranges shown in guidance)" -ForegroundColor Blue
+            } else {
+                Write-Host "  Showing all published Intune IP ranges." -ForegroundColor DarkGray
             }
         } else {
-            Write-Host "  Showing full list (no region filter applied)." -ForegroundColor DarkGray
+            # Never a health failure: the check itself is unaffected.
+            Write-Host "  Regional filtering is unavailable right now (Microsoft's service tag data" -ForegroundColor DarkGray
+            Write-Host "  could not be retrieved or mapped). Showing all published Intune IP ranges." -ForegroundColor DarkGray
+            Write-Host "  This does not affect any connectivity test result." -ForegroundColor DarkGray
         }
-    } else {
-        Write-Host "  [region-picker] Could not map any ranges to regions - showing full static list." -ForegroundColor DarkYellow
     }
 }
 
 Write-Host ""
+Write-Host "  Workload  : $workloadLabel" -ForegroundColor Blue
 Write-Host "  Mode      : $modeLabel" -ForegroundColor Blue
 if ($selectedRegion) {
-    Write-Host "  Region    : $selectedRegion  (mapped via AzureCloud tags)" -ForegroundColor Blue
+    Write-Host "  IP filter : $selectedRegion  (Intune CIDR guidance only)" -ForegroundColor Blue
 }
 Write-Host "  Computer  : $env:COMPUTERNAME  |  User: $env:USERNAME" -ForegroundColor DarkGray
 Write-Host "  Date/Time : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor DarkGray
