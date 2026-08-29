@@ -110,7 +110,7 @@ param(
 # -----------------------------------------------------------------------------
 $ScriptName     = 'Test-W365NetworkHealth'
 $ScriptVersion  = 'v4.0'
-$CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/windows365/main/Endpoints.csv'
+$CSVGitHubURL   = 'https://raw.githubusercontent.com/bowkercloud/cloud-endpoint-network-health-check/main/Endpoints.csv'
 $TimeoutSeconds = 5
 $script:InterceptDetected = $false   # set by the Step 2c control probe; read by Write-Summary
 # $MaxParallel comes from the parameter block - raise for speed, lower if a proxy rate-limits you
