@@ -26,7 +26,7 @@ The current endpoint dataset contains **442 entries** across Microsoft Intune, W
 
 The script started life as a Windows 365 network checker, but it has grown quite a bit beyond that.
 
-The biggest change in v4.0 is that **Microsoft Intune is now a first-class workload**, alongside Windows 365 and Azure Virtual Desktop.
+The biggest change in v4.0 is that **Microsoft Intune now has dedicated validation**, alongside Windows 365 and Azure Virtual Desktop.
 
 You can now choose exactly what you want to validate:
 
@@ -112,7 +112,7 @@ Commands written before workload selection existed still work unchanged. `-Workl
 
 ## Microsoft Intune
 
-Intune is now a first-class workload rather than something that is only tested as part of Windows 365.
+Intune now has dedicated validation rather than being tested only as part of Windows 365.
 
 `-Workload Intune` validates the published Microsoft Intune network requirements for Windows devices in the commercial Microsoft cloud, including:
 
@@ -142,7 +142,7 @@ Selecting `Windows365` does more than test the Windows 365 service endpoints.
 
 Microsoft's Windows 365 network requirements include four separate areas: the physical device, Microsoft Intune, the AVD session host virtual machine and the Windows 365 service.
 
-A Cloud PC is an AVD session host, managed by Intune and running on Azure infrastructure, so testing only the Windows 365 service FQDNs could give you an all-green result while a genuine Intune or AVD dependency is still blocked.
+A Cloud PC is a Windows 365-managed desktop that relies on Intune, Azure Virtual Desktop connectivity components and Azure platform services, so testing only the Windows 365 service FQDNs could give you an all-green result while a genuine dependency is still blocked.
 
 The Windows 365 workload therefore includes:
 
@@ -198,19 +198,29 @@ A DNS problem, firewall block and SSL inspection issue can all break the service
 **PowerShell 7 is recommended:**
 
 ```powershell
-irm https://bowker.cloud/w365check | iex
+irm https://bowker.cloud/endpointcheck | iex
 ```
 
 **From CMD or the Windows Run dialog:**
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -Command "irm https://bowker.cloud/w365check | iex"
+pwsh -ExecutionPolicy Bypass -Command "irm https://bowker.cloud/endpointcheck | iex"
 ```
 
 **Windows PowerShell 5.1:**
 
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "irm https://bowker.cloud/w365check | iex"
+powershell -ExecutionPolicy Bypass -Command "irm https://bowker.cloud/endpointcheck | iex"
+```
+
+The original `https://bowker.cloud/w365check` alias remains available for backwards compatibility.
+
+**Review before running:**
+
+```powershell
+Invoke-WebRequest https://bowker.cloud/endpointcheck -OutFile .\Test-W365NetworkHealth.ps1
+notepad .\Test-W365NetworkHealth.ps1
+.\Test-W365NetworkHealth.ps1
 ```
 
 > **Run it elevated.** Some Azure fabric checks behave differently from a non-elevated session and can otherwise appear unreachable when they are fine. Administrator is enough for the normal test.
@@ -357,7 +367,7 @@ Useful for attaching evidence to a ticket, comparing tests from different networ
 
 | File | Description |
 |------|-------------|
-| `Test-W365NetworkHealth.ps1` | Main PowerShell script. The filename predates Intune and AVD becoming first-class workloads and is retained so existing links, commands and automation keep working. |
+| `Test-W365NetworkHealth.ps1` | Main PowerShell script. The filename predates dedicated Intune and AVD validation and is retained so existing links, commands and automation keep working. |
 | `Endpoints.csv` | All 442 endpoint entries with category, port, protocol, mode, workload membership, notes and Microsoft documentation reference |
 
 `Endpoints.csv` remains the source of truth. Workload membership lives in the `Workloads` column, so shared dependencies can belong to more than one workload without duplicating rows.
@@ -454,7 +464,7 @@ If something needs adding or Microsoft update one of the published lists, raise 
 
 ## Legal
 
-This script is provided under the [MIT License](LICENSE) and is free to use, modify and distribute.
+This script is available to use, modify and distribute under the [MIT License](LICENSE).
 
 It is provided as-is, without warranty of any kind. Always review scripts before running them in your environment.
 

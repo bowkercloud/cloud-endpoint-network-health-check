@@ -13,7 +13,7 @@
     Endpoints are loaded from a companion Endpoints.csv file (recommended) or from built-in defaults.
 
     Run directly from GitHub:
-    powershell -ExecutionPolicy Bypass -Command "irm https://bowker.cloud/w365check | iex"
+    powershell -ExecutionPolicy Bypass -Command "irm https://bowker.cloud/endpointcheck | iex"
 
 .PARAMETER Workload
     What to validate. Prompted if not supplied; Enter selects All.
