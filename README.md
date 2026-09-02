@@ -1,5 +1,10 @@
 # Microsoft Cloud Endpoint Network Health Check
 
+> [!IMPORTANT]
+> **This repository is archived and retained for backwards compatibility.**
+> Active development has moved to [Microsoft Cloud Endpoint Network Health Check](https://github.com/bowkercloud/Microsoft-Cloud-Endpoint-Network-Health-Check).
+> Existing `https://bowker.cloud/w365check` commands and legacy file links remain available, but new users should use `https://bowker.cloud/endpointcheck` and the new repository.
+
 **Microsoft Intune, Windows 365 & Azure Virtual Desktop**
 
 PowerShell network validation for Microsoft Intune, Windows 365 and Azure Virtual Desktop.
